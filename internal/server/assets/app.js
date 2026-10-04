@@ -5,7 +5,7 @@ const APP_BASE=PUBLIC_VIEW?location.pathname.match(/^\/[A-Za-z0-9]{8}\/app/)[0]:
 const route=path=>APP_BASE+path;
 document.body.classList.toggle('public-view',PUBLIC_VIEW);
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const state={shareMode:null,fixedLoaded:false,connectionMode:null,page:'activity',data:null,calls:[],total:0,selected:null,session:'',category:'',query:'',status:'',offset:0,frames:[],frame:0,tool:null,toolRunning:false,connected:false,detail:null,detailVersion:0,replayDetail:null,replaySide:'after',replayVersion:0,frameSignature:'',framesVersion:0};
+const state={shareMode:null,route:null,relayBusy:false,relayError:'',fixedLoaded:false,connectionMode:null,page:'activity',data:null,calls:[],total:0,selected:null,session:'',category:'',query:'',status:'',offset:0,frames:[],frame:0,tool:null,toolRunning:false,connected:false,detail:null,detailVersion:0,replayDetail:null,replaySide:'after',replayVersion:0,frameSignature:'',framesVersion:0};
 const scrollView=document.querySelector('.view'),topBar=document.querySelector('.top');
 function updateTopFade(){topBar.style.setProperty('--top-fade',String(Math.min(1,Math.max(0,scrollView.scrollTop)/24)))}
 scrollView.addEventListener('scroll',updateTopFade,{passive:true});
@@ -421,7 +421,7 @@ function connectionPrompt(gateway,mode,shareMode="quick"){
 function renderConnection(){
  const d=state.data;if(!d)return;
  const t=d.tunnel||{state:'stopped'},active=['installing','starting','ready'].includes(t.state),busy=['installing','starting','stopping'].includes(t.state);
- if(state.connectionMode===null)state.connectionMode=PUBLIC_VIEW||active?'public':'local';
+ if(state.connectionMode===null)state.connectionMode=PUBLIC_VIEW||active||d.cloud?.relay?.enabled?'public':'local';
  const remote=PUBLIC_VIEW||state.connectionMode==='public',gateway=connectionGateway(d,state.connectionMode);
  if(state.shareMode===null||active||busy)state.shareMode=t.mode||'quick';
  const fixed=state.shareMode==='fixed';
@@ -460,8 +460,47 @@ function renderConnection(){
  $('share-log-count').textContent=t.logs?.length?readyRigI18n.t("最近 {0} 条记录", {0: t.logs.length}):readyRigI18n.t("连接记录");
  $('copy-share-logs').disabled=!t.logs?.length;
  if(logs.textContent!==text){const follow=logs.scrollHeight-logs.scrollTop-logs.clientHeight<24;logs.textContent=text;if(follow)logs.scrollTop=logs.scrollHeight}
-
+ renderRoutes(d,t,active,busy,remote);
 }
+// Two ways for an agent to reach this computer: a direct Cloudflare link, or forwarding through the
+// ReadyRig cloud. The cloud route is the opt-in relay: it is the whole path when no link is running,
+// and a backup (on standby, holding no connection) while the direct link works.
+function renderRoutes(d,t,active,busy,remote){
+ if(PUBLIC_VIEW)return;
+ const L=readyRigI18n.t,c=d.cloud||{},r=c.relay||{},signed=!!c.device_id,on=!!r.enabled,rs=on?(r.state||'connecting'):'off',ready=t.state==='ready';
+ if(state.route===null)state.route=!active&&on?'cloud':'direct';
+ const cloudRoute=state.route==='cloud';
+ for(const k of ['direct','cloud']){const b=$('route-'+k);b.classList.toggle('selected',state.route===k);b.setAttribute('aria-checked',String(state.route===k))}
+ $('route-direct-panel').classList.toggle('hidden',cloudRoute);$('route-cloud-panel').classList.toggle('hidden',!cloudRoute);
+ const names={off:'未开启',standby:'待命',connecting:'正在连接',connected:'已连接',error:'连接失败'},login=L('需要先在上方「云端账号」登录。');
+ $('backup-toggle').classList.toggle('on',on);$('backup-toggle').setAttribute('aria-checked',String(on));$('backup-toggle').disabled=state.relayBusy||!signed;
+ $('backup-note').textContent=state.relayError||(!signed?login:!on?L('开启后，直连链接失效时，文件内容、命令输出和截图会经 ReadyRig 服务器转发；链接正常时不传数据。'):rs==='standby'?L('已开启 · 待命：链接正常，没有数据经过 ReadyRig 服务器。'):rs==='connected'?L('已开启 · 直连链接不可用，已改用 ReadyRig 云端。'):L(r.message||'')||L(names[rs]));
+ $('cloud-route-status').textContent=L(names[rs]);$('cloud-route-status').classList.toggle('good',rs==='connected');
+ $('cloud-route-toggle').textContent=L(on?'关闭云端转发':'我了解数据会经 ReadyRig 服务器，开启');$('cloud-route-toggle').disabled=state.relayBusy||!signed;
+ $('cloud-route-note').textContent=state.relayError||(!signed?login:on&&ready?L('直连链接正常时，这里待命、不传数据。'):on?L(r.message||''):'');
+ $('cloud-route-note').classList.toggle('error-text',!!state.relayError);
+ const mcp=on&&c.url?c.url.replace(/[/]+$/,'')+'/mcp':'';
+ $('cloud-mcp').classList.toggle('hidden',!mcp);$('cloud-mcp-url').textContent=mcp||'—';$('copy-cloud-mcp').disabled=!mcp;
+ // One status line for both routes.
+ let summary='';
+ if(ready&&on&&rs==='standby')summary='直连链接已开启 · 云端备用待命';
+ else if(!ready&&on&&rs==='connected')summary=t.state==='stopped'?'经 ReadyRig 云端已连接':'直连链接未就绪 · 云端备用已连接';
+ if(summary)$('share-status').textContent=L(summary);
+ $('share-state').classList.toggle('hidden',!remote&&!active&&!busy&&!on);
+ $('share-indicator').classList.toggle('ready',ready||rs==='connected');
+ if(cloudRoute){
+  for(const id of ['share-actions','share-message','connection-address','share-links','share-diagnostics','share-error'])$(id).classList.add('hidden');
+  $('connection-note').textContent=L('经 ReadyRig 云端转发时，数据会经过 ReadyRig 服务器。权限仍在本机管理，随时可以关闭。');
+ }
+}
+async function setRelayEnabled(enabled){
+ state.relayBusy=true;state.relayError='';renderConnection();
+ try{await api('/api/cloud/relay',{enabled,acknowledged:enabled});await refresh()}catch(e){state.relayError=e.message}finally{state.relayBusy=false;renderConnection()}
+}
+for(const k of ['direct','cloud'])$('route-'+k).onclick=()=>{state.route=k;renderConnection()};
+$('backup-toggle').onclick=()=>void setRelayEnabled(!state.data?.cloud?.relay?.enabled);
+$('cloud-route-toggle').onclick=()=>void setRelayEnabled(!state.data?.cloud?.relay?.enabled);
+$('copy-cloud-mcp').onclick=()=>copy($('cloud-mcp-url').textContent);
 for(const mode of ['local','public'])$('connection-'+mode).onclick=()=>{state.connectionMode=mode;renderConnection()};
 async function changeSharing(action){
  const b=$(action==='start'?'share-start':'share-stop');b.disabled=true;

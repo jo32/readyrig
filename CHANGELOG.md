@@ -2,6 +2,20 @@
 
 Notable changes to ReadyRig are recorded here. For setup and current behavior, see the [README](README.md).
 
+## Unreleased
+
+### Added
+
+- Cloud relay, an opt-in backup for the Cloudflare tunnel. When the tunnel is down or unavailable, the app opens an outbound WebSocket to the cloud site, and the cloud MCP's `list_computer_tools` and `call_computer_tool` use it. The tunnel is still tried first; the relay is used when there is no usable tunnel link or the tunnel's edge returns 530 (the request never reached the computer).
+- While the tunnel works, relay stays on standby with no connection, so no tool data passes through the cloud. It connects when the tunnel is not ready and steps back after the tunnel has been ready for five seconds with no call running.
+- Relay is off by default and warns that, unlike a tunnel, tool arguments and results pass through the cloud server. The Connect panel under Public now asks how agents reach the computer, with two plain-language routes: Direct link (data does not pass through ReadyRig's servers) and Via ReadyRig cloud (it does). The backup is a checkbox under Direct link; the cloud route can also run on its own and shows the MCP address to add. The cloud console shows the same two routes. It turns on only at the computer, after an acknowledgement: a checkbox, `readyrig cloud relay on --yes`, or `m` in the terminal dashboard. It can be turned off locally, from the cloud console, or with the new `relay.stop` command. The cloud has no command that turns it on.
+- Relayed calls run through the same registry as gateway calls, so capability, pause, folder and permission checks and local logging are unchanged. They are limited to eight at once, and results over 8 MiB are refused.
+- The cloud console and the cloud API report each computer's `relay.state` (`off`, `standby`, `connecting`, `connected`, `error`).
+
+### Changed
+
+- The integration script starts the app with `--foreground`, so it no longer leaves a daemon holding its ports.
+
 ## 0.6.17
 
 ### Fixed

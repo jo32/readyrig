@@ -2,7 +2,7 @@
 // a harmless connector process. This never opens a real public tunnel.
 import { spawn, execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
@@ -13,6 +13,7 @@ const dir = mkdtempSync(join(tmpdir(), 'readyrig-cloud-test-')), children = []
 const workerOrigin = 'http://localhost:18787', appOrigin = 'http://127.0.0.1:17431'
 const session = randomBytes(32).toString('base64url'), sessionHash = createHash('sha256').update(session).digest('hex')
 const discoverySession = randomBytes(32).toString('base64url'), discoverySessionHash = createHash('sha256').update(discoverySession).digest('hex')
+const mcpToken = randomBytes(32).toString('base64url'), sha256 = value => createHash('sha256').update(value).digest('hex')
 const wrangler = join(cloud, 'node_modules/wrangler/bin/wrangler.js'), persist = join(dir, 'worker')
 let appKey, helper, deviceID
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -36,7 +37,7 @@ const local = (path, method = 'GET', data) => request(appOrigin, path, method, d
 const remote = (path, method = 'GET', data) => request(workerOrigin, path, method, data, owner)
 try {
   wranglerSync(['d1', 'migrations', 'apply', 'DB', '--local', '--persist-to', persist])
-  const seed = `INSERT INTO users VALUES('integration-user','integration@example.invalid','Integration Test',unixepoch()); INSERT INTO sessions VALUES('${sessionHash}','integration-user',unixepoch()+3600); INSERT INTO sessions VALUES('${discoverySessionHash}','integration-user',unixepoch()+3600);`
+  const seed = `INSERT INTO users VALUES('integration-user','integration@example.invalid','Integration Test',unixepoch()); INSERT INTO sessions VALUES('${sessionHash}','integration-user',unixepoch()+3600); INSERT INTO sessions VALUES('${discoverySessionHash}','integration-user',unixepoch()+3600); INSERT INTO mcp_clients(id,user_id,name,redirect_uris,created_at) VALUES('integration-client','integration-user','Integration MCP','[]',unixepoch()); INSERT INTO mcp_grants VALUES('integration-grant','integration-client','integration-user','${sha256(mcpToken)}','${sha256('unused-' + mcpToken)}',unixepoch()+3600,unixepoch()+3600);`
   const seedPath = join(dir, 'seed.sql'); writeFileSync(seedPath, seed, { mode: 0o600 })
   wranglerSync(['d1', 'execute', 'DB', '--local', '--persist-to', persist, '--file', seedPath])
   const worker = start(process.execPath, [wrangler, 'dev', '--port', '18787', '--local-upstream', 'localhost:18787', '--persist-to', persist, '--var', 'PUBLIC_ORIGIN:' + workerOrigin], { cwd: cloud })
@@ -45,7 +46,7 @@ try {
   const binary = join(dir, 'readyrig'); execFileSync('go', ['build', '-tags', 'nogui', '-o', binary, './cmd/adapter'], { cwd: root, stdio: 'pipe' })
   const connector = join(dir, 'connector'); writeFileSync(connector, "#!/bin/sh\necho 'https://readyrig-integration-fixture.trycloudflare.com'\necho 'INF Registered tunnel connection'\nexec sleep 600\n", { mode: 0o700 })
   mkdirSync(join(dir, 'workspace'))
-  const app = start(binary, ['web', '--workspace', join(dir, 'workspace'), '--data-dir', join(dir, 'data'), '--ui', '127.0.0.1:17431', '--gateway', '127.0.0.1:17432', '--cloud-url', workerOrigin, '--cloudflared', connector, '--no-chrome', '--no-update'])
+  const app = start(binary, ['web', '--foreground', '--workspace', join(dir, 'workspace'), '--data-dir', join(dir, 'data'), '--ui', '127.0.0.1:17431', '--gateway', '127.0.0.1:17432', '--cloud-url', workerOrigin, '--cloudflared', connector, '--no-chrome', '--no-update'])
   app.stdout.on('data', data => { const match = String(data).match(/#key=([a-f0-9]+)/); if (match) appKey = match[1] })
   await waitFor(() => appKey, 'App startup')
   const login = await fetch(appOrigin + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: appOrigin }, body: JSON.stringify({ key: appKey }) })
@@ -102,6 +103,50 @@ try {
   await remote('/api/devices/' + deviceID, 'PATCH', { name: 'Renamed Integration Mac' })
   await waitFor(async () => (await local('/api/cloud')).name === 'Renamed Integration Mac', 'Rename heartbeat')
   console.log('PASS: device rename reflected in app')
+  // Relay mode: the real RelayHub Durable Object, the real WebSocket client and the real tools.
+  // The tunnel is stopped here, so these calls can only succeed through the relay.
+  const mcp = async (name, args) => {
+    const response = await fetch(workerOrigin + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + mcpToken }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { computer_id: deviceID, ...args } } }) })
+    assert.equal(response.status, 200); return (await response.json()).result
+  }
+  const relayOf = async () => (await local('/api/cloud')).relay
+  assert.deepEqual(await relayOf(), { enabled: false, state: 'off', message: '' })
+  const noRelay = await mcp('list_computer_tools', {})
+  assert.equal(noRelay.isError, true); assert.match(noRelay.content[0].text, /relay mode/)
+  const refused = await fetch(appOrigin + '/api/cloud/relay', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: localCookie, Origin: appOrigin }, body: JSON.stringify({ enabled: true }) })
+  assert.equal(refused.status, 400); assert.equal((await relayOf()).enabled, false)
+  await local('/api/cloud/relay', 'POST', { enabled: true, acknowledged: true })
+  await waitFor(async () => (await relayOf()).state === 'connected', 'Relay WebSocket connection')
+  await waitFor(async () => (await remote('/api/devices')).devices[0].snapshot.relay?.state === 'connected', 'Relay state heartbeat')
+  const relayed = await mcp('list_computer_tools', {})
+  assert.equal(relayed.isError, false); assert.ok(JSON.parse(relayed.content[0].text).result.tools.length > 0)
+  const shell = await mcp('call_computer_tool', { tool_name: 'exec_command', arguments: { command: "printf 'readyrig-relay-fixture'", yield_time_ms: 1000 } })
+  assert.equal(shell.isError, false); assert.ok(shell.content[0].text.includes('readyrig-relay-fixture'))
+  // A large payload crosses the socket intact (the tool-argument direction carries file contents).
+  const big = 'readyrig-relay-payload-'.repeat(40000).slice(0, 900000)
+  const written = await mcp('call_computer_tool', { tool_name: 'write_file', arguments: { path: 'relay-big.txt', content: big } })
+  assert.equal(written.isError, false, written.content[0].text)
+  assert.equal(readFileSync(join(dir, 'workspace', 'relay-big.txt'), 'utf8'), big)
+  assert.ok((await local('/api/state')).sessions.some(s => String(s.session || s.id || JSON.stringify(s)).includes('cloud-integration-grant')))
+  console.log('PASS: relay mode (opt-in) → MCP tool calls over WebSocket with the tunnel stopped')
+  // The cloud can turn relay off but has no command that turns it on.
+  const startRelay = await fetch(workerOrigin + commandPath, { method: 'POST', headers: { ...controlHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'relay.start', payload: { enabled: true }, request_id: randomUUID() }) })
+  assert.equal(startRelay.status, 400)
+  await command('relay.stop', {}, state => assert.equal(state.cloud.relay.enabled, false))
+  await waitFor(async () => (await relayOf()).state === 'off', 'Relay turned off')
+  const stopped = await mcp('list_computer_tools', {})
+  assert.equal(stopped.isError, true)
+  console.log('PASS: relay.stop from the cloud closes the socket; relay cannot be enabled remotely')
+  await local('/api/cloud/relay', 'POST', { enabled: true, acknowledged: true })
+  await waitFor(async () => (await relayOf()).state === 'connected', 'Relay reconnection')
+  // The tunnel is the main path: once it works the relay drops its connection and stands by,
+  // and it comes back when the tunnel stops.
+  await command('tunnel.start', { mode: 'quick' }, state => assert.equal(state.tunnel.state, 'ready'))
+  await waitFor(async () => (await relayOf()).state === 'standby', 'Relay standby while the tunnel works')
+  assert.equal((await relayOf()).enabled, true)
+  await command('tunnel.stop', {}, state => assert.equal(state.tunnel.state, 'stopped'))
+  await waitFor(async () => (await relayOf()).state === 'connected', 'Relay reconnects when the tunnel stops')
+  console.log('PASS: relay stands by while the tunnel works and reconnects when it stops')
   helper = createServer((req, res) => {
     if (req.url === '/app') { res.writeHead(302, { Location: appOrigin + '/#key=' + appKey }); res.end(); return }
     res.writeHead(302, { 'Set-Cookie': `readyrig_session=${session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600`, Location: workerOrigin + '/console?lang=zh-CN' }); res.end()
@@ -110,7 +155,8 @@ try {
   if (process.argv.includes('--keep')) { console.log('Fixtures kept for visual verification. Stop to clean up.'); await new Promise(resolve => { process.once('SIGINT', resolve); process.once('SIGTERM', resolve) }) }
   await remote('/api/devices/' + deviceID, 'DELETE')
   await waitFor(async () => (await local('/api/cloud')).state === 'revoked', 'Credential revocation')
-  console.log('PASS: unbinding revokes device credentials')
+  await waitFor(async () => (await relayOf()).state !== 'connected', 'Relay socket closed on unbinding')
+  console.log('PASS: unbinding revokes device credentials and closes the relay socket')
 } finally {
   helper?.close()
   for (const child of children.reverse()) { try { if (process.platform === 'win32') child.kill('SIGTERM'); else process.kill(-child.pid, 'SIGTERM') } catch {} }

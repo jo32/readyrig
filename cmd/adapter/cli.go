@@ -43,6 +43,10 @@ Usage: readyrig [command] [options]
                               Save fixed tunnel settings; read secret from stdin
   cloud login [--name NAME] [--url URL]|status|logout
                               Bind this computer from a browser on another machine
+  cloud relay on --yes|off|status
+                              Opt-in backup for the tunnel: when it is down, tool calls travel over a WebSocket
+                              through the cloud server, which sees file contents, command output
+                              and screenshots. Idle while the tunnel works. Off by default; turned on only here, with --yes
   service install|start|stop|restart|status|uninstall|print
                               Manage a Linux systemd user service
   update / version            Update the binary or print its version
@@ -56,6 +60,9 @@ Capability choices and projects are saved. Full Access and pause state are sessi
 
 Startup options:
 `
+
+// Shown when relay mode is requested without --yes.
+const relayConsentMessage = "relay mode is a backup for when the tunnel is unavailable: while it is connected it sends tool arguments and results (file contents, command output, screenshots) through the cloud server, which a tunnel does not; run 'readyrig cloud relay on --yes' to confirm"
 
 type controlEndpoint struct {
 	Socket string `json:"socket"`
@@ -376,6 +383,36 @@ func controlAction(mode string, args []string, o *startupOptions) (method, path 
 			path, input = "/api/cloud/disconnect", map[string]any{}
 			break
 		}
+		if len(args) >= 2 && args[0] == "relay" {
+			switch args[1] {
+			case "status":
+				if len(args) == 2 {
+					get("/api/cloud")
+					return
+				}
+			case "off":
+				if len(args) == 2 {
+					path, input = "/api/cloud/relay", map[string]any{"enabled": false}
+					return
+				}
+			case "on":
+				f := flag.NewFlagSet("cloud relay on", flag.ContinueOnError)
+				yes := f.Bool("yes", false, "Confirm that tool data passes through the cloud server")
+				if err = f.Parse(args[2:]); err != nil {
+					return
+				}
+				if f.NArg() == 0 {
+					if !*yes {
+						err = errors.New(relayConsentMessage)
+						return
+					}
+					path, input = "/api/cloud/relay", map[string]any{"enabled": true, "acknowledged": true}
+					return
+				}
+			}
+			bad("cloud relay on --yes | off | status")
+			return
+		}
 		if len(args) >= 1 && args[0] == "login" {
 			f := flag.NewFlagSet("cloud login", flag.ContinueOnError)
 			name, _ := os.Hostname()
@@ -392,7 +429,7 @@ func controlAction(mode string, args []string, o *startupOptions) (method, path 
 			path, input = "/api/cloud/login", map[string]string{"name": name, "url": cloudURL}
 			break
 		}
-		bad("cloud login [--name NAME] [--url URL] | status | logout")
+		bad("cloud login [--name NAME] [--url URL] | status | logout | relay on --yes|off|status")
 	}
 	return
 }

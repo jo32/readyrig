@@ -5,12 +5,16 @@ import { createRemoteJWKSet, jwtVerify } from 'jose'
 import { now, randomToken, hash, HTTPError, json, body, text } from './http.ts'
 import { computerAPI, issueDiscoveryToken } from './computer-discovery.ts'
 import { expireCommands, commandHistory, queueCommand } from './computer-commands.ts'
+import { relayClose, relayConnect } from './relay.ts'
 export { validateCommand } from './computer-commands.ts'
+export { RelayHub } from './relay.ts'
 export { hash, randomToken } from './http.ts'
 
 export interface Env {
   DB: D1Database
   ASSETS: Fetcher
+  // Durable Object namespace for opt-in relay mode; without it the service has no relay.
+  RELAY?: DurableObjectNamespace
   PUBLIC_ORIGIN: string
   LEGACY_ORIGIN?: string
   MCP_ALLOWED_TUNNEL_HOSTS?: string
@@ -56,7 +60,9 @@ export function sanitizeSnapshot(raw: unknown): Record<string, unknown> {
   for (const key of ['files', 'terminal', 'computer', 'browser']) enabled[key] = v.enabled?.[key] === true
   const t = v.tunnel || {}, tunnel: Record<string, unknown> = {}
   for (const key of ['mode', 'state', 'message', 'url', 'gateway', 'console', 'mcp']) if (typeof t[key] === 'string' && t[key].length <= 2048) tunnel[key] = t[key]
-  return { version: typeof v.version === 'string' ? v.version.slice(0, 64) : '', platform: typeof v.platform === 'string' ? v.platform.slice(0, 32) : '', paused: v.paused === true, enabled, tunnel }
+  const r = v.relay || {}, relay: Record<string, unknown> = {}
+  for (const key of ['state', 'message']) if (typeof r[key] === 'string' && r[key].length <= 512) relay[key] = r[key]
+  return { version: typeof v.version === 'string' ? v.version.slice(0, 64) : '', platform: typeof v.platform === 'string' ? v.platform.slice(0, 32) : '', paused: v.paused === true, enabled, tunnel, relay }
 }
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url), path = url.pathname
@@ -100,6 +106,13 @@ async function route(req: Request, env: Env): Promise<Response> {
     return redirect(flow.return_to, [setCookie(env, 'session', session, 7 * 86400), setCookie(env, 'oauth', '', 0)])
   }
   if (path.startsWith('/api/v1/')) return computerAPI(req, env)
+  if (path === '/api/agent/relay' && req.method === 'GET') {
+    // Opt-in relay: the computer holds this WebSocket open so tool calls need no tunnel.
+    const device = await agent(req, env)
+    if (!env.RELAY) throw new HTTPError(503, '此云端服务未开启云端转发')
+    if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new HTTPError(426, '需要 WebSocket 连接')
+    return relayConnect(env, device.id, req)
+  }
   if (path.startsWith('/api/agent/') && req.method === 'POST') {
     const input = await body(req)
     if (path === '/api/agent/pair') {
@@ -189,11 +202,14 @@ async function revoke(env: Env, id: string): Promise<void> {
     env.DB.prepare('UPDATE devices SET revoked_at=?,snapshot=\'{}\' WHERE id=?').bind(now(), id),
     env.DB.prepare("UPDATE commands SET status='revoked',completed_at=?,error='设备已解绑' WHERE device_id=? AND status IN ('queued','executing')").bind(now(), id)
   ])
+  await relayClose(env, id)
 }
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     let response: Response
     try { response = await route(req, env) } catch (e) { response = e instanceof HTTPError ? json({ error: e.message }, e.status) : json({ error: '服务暂时不可用，请重试' }, 500) }
+    // A WebSocket upgrade carries its socket on the Response; rebuilding it would drop that.
+    if (response.status === 101) return response
     const headers = new Headers(response.headers)
     // ReadyRig installs its own beacon; prevent the zone from injecting a second one.
     if (headers.get('Content-Type')?.includes('text/html')) headers.set('Cache-Control', [headers.get('Cache-Control'), 'no-transform'].filter(Boolean).join(', '))

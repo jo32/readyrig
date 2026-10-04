@@ -629,3 +629,177 @@ test('cloud MCP relays enabled tools only to the current owned approved tunnel, 
     assert.equal((await run('list_computer_tools', {})).result.result.isError, true)
   } finally { globalThis.fetch = originalFetch }
 })
+
+// A stand-in for the RelayHub Durable Object namespace. It records what the Worker sends
+// and answers /status and /call like the real hub does; it cannot model WebSockets.
+function fakeRelay(options: { connected?: boolean; reply?: { http_status: number; body: unknown } | { fail: number; error: string } } = {}) {
+  const state = { connected: options.connected ?? true, calls: [] as any[], connects: [] as Request[], closed: [] as string[], names: [] as string[], reply: options.reply ?? { http_status: 200, body: { call_id: 'relay', result: { tools: [] }, status: 'success', error: '' } } }
+  env.RELAY = { idFromName: (name: string) => { state.names.push(name); return name }, get: (id: string) => ({ fetch: async (input: RequestInfo, init?: RequestInit) => {
+    const req = new Request(input, init), path = new URL(req.url).pathname
+    if (req.headers.get('Upgrade') === 'websocket') { state.connects.push(req); return new Response(null, { status: 200, headers: { 'X-Relay-Device': id } }) }
+    if (path === '/status') return Response.json({ connected: state.connected })
+    if (path === '/close') { state.closed.push(id); return Response.json({ ok: true }) }
+    state.calls.push(await req.json())
+    if (!state.connected) return Response.json({ error: 'not_connected' }, { status: 409 })
+    const reply = state.reply as any
+    return 'fail' in reply ? Response.json({ error: reply.error }, { status: reply.fail }) : Response.json(reply)
+  } }) } as unknown as DurableObjectNamespace
+  return state
+}
+const relaySnapshot = (state: string, tunnel: Record<string, unknown> = { state: 'stopped' }) => ({ ...snapshot, tunnel, relay: { state, message: 'private-detail', token: 'private-device-secret' } })
+
+test('relay state in a heartbeat is sanitized and reported as relay.state only while online', async () => {
+  const d = await register(), token = await access(), path = '/api/v1/computers/' + d.id
+  const none = (await call(path, 'GET', undefined, token.headers)).result.computer
+  assert.deepEqual(none.relay, { state: 'off' })
+  await beat(d, relaySnapshot('connected') as any)
+  const stored = JSON.parse(db.prepare('SELECT snapshot FROM devices WHERE id=?').get(d.id)!.snapshot as string)
+  assert.deepEqual(stored.relay, { state: 'connected', message: 'private-detail' })
+  const online = (await call(path, 'GET', undefined, token.headers)).result.computer
+  assert.deepEqual(online.relay, { state: 'connected' }); assert.equal(online.links, null)
+  assert.ok(!JSON.stringify(online).includes('private'))
+  await beat(d, relaySnapshot('bogus') as any)
+  assert.deepEqual((await call(path, 'GET', undefined, token.headers)).result.computer.relay, { state: 'off' })
+  await beat(d, relaySnapshot('connected') as any)
+  db.prepare('UPDATE devices SET last_seen=? WHERE id=?').run(timestamp() - 61, d.id)
+  assert.deepEqual((await call(path, 'GET', undefined, token.headers)).result.computer.relay, { state: 'off' })
+})
+
+test('relay can be switched off remotely but never switched on remotely', async () => {
+  const d = await register(), token = await access(), path = '/api/v1/computers/' + d.id + '/commands'
+  const stop = await call(path, 'POST', { kind: 'relay.stop', payload: {}, request_id: randomToken() }, token.headers)
+  assert.equal(stop.response.status, 202); assert.equal(stop.result.kind, 'relay.stop')
+  for (const kind of ['relay.start', 'relay.enable', 'relay.set']) assert.equal((await call(path, 'POST', { kind, payload: { enabled: true }, request_id: randomToken() }, token.headers)).response.status, 400)
+  assert.equal((await beat(d)).result.command.kind, 'relay.stop')
+})
+
+test('the relay socket needs a device credential, an upgrade request and a configured hub', async () => {
+  const d = await register(), other = await register(), relay = fakeRelay()
+  const connect = (headers: Record<string, string>) => worker.fetch(new Request(origin + '/api/agent/relay', { headers }), env)
+  assert.equal((await connect({ Upgrade: 'websocket' })).status, 401)
+  assert.equal((await connect({ Upgrade: 'websocket', Authorization: 'Bearer ' + session })).status, 401)
+  assert.equal((await connect({ Authorization: d.headers.Authorization })).status, 426)
+  assert.equal((await call('/api/agent/relay', 'POST', {}, d.headers)).response.status, 404)
+  assert.equal(relay.connects.length, 0)
+  const ok = await connect({ Upgrade: 'websocket', Authorization: d.headers.Authorization })
+  assert.equal(ok.headers.get('X-Relay-Device'), d.id); assert.deepEqual(relay.names, [d.id])
+  assert.equal((await connect({ Upgrade: 'websocket', Authorization: other.headers.Authorization })).headers.get('X-Relay-Device'), other.id)
+  delete env.RELAY
+  assert.equal((await connect({ Upgrade: 'websocket', Authorization: d.headers.Authorization })).status, 503)
+  // A revoked computer loses both its credential and its open socket.
+  const live = fakeRelay()
+  assert.equal((await call('/api/devices/' + d.id, 'DELETE', undefined, owner())).response.status, 200)
+  assert.deepEqual(live.closed, [d.id])
+  assert.equal((await connect({ Upgrade: 'websocket', Authorization: d.headers.Authorization })).status, 401)
+})
+
+test('cloud MCP uses the relay when no tunnel is usable and says so when it cannot', async () => {
+  const device = await register(), client = await newMCPClient(), tokens = await mcpToken(client), relay = fakeRelay()
+  const run = (name: string, args: Record<string, unknown>) => rpc(tokens.access_token, 'tools/call', { name, arguments: { computer_id: device.id, ...args } })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('the relay must not use the network') }
+  try {
+    await beat(device, relaySnapshot('off') as any)
+    let blocked = (await run('list_computer_tools', {})).result.result
+    assert.equal(blocked.isError, true); assert.match(blocked.content[0].text, /relay mode/)
+    assert.equal(relay.calls.length, 0)
+    await beat(device, relaySnapshot('connected') as any)
+    const listed = (await run('list_computer_tools', {})).result.result
+    assert.equal(listed.isError, false)
+    assert.deepEqual(relay.calls[0], { tool: 'help', args: {}, session: relay.calls[0].session, client: 'ReadyRig Cloud MCP' })
+    assert.ok(relay.calls[0].session.startsWith('cloud-'))
+    assert.deepEqual(relay.names.at(-1), device.id)
+    relay.reply = { http_status: 200, body: { call_id: 's', result: { screenshot: 'data:image/jpeg;base64,dGVzdA==' }, status: 'success' } }
+    const shot = (await run('call_computer_tool', { tool_name: 'computer_screenshot', arguments: { frame: 1 } })).result.result
+    assert.equal(shot.content[0].type, 'image'); assert.equal(shot.content[0].data, 'dGVzdA==')
+    assert.deepEqual(relay.calls.at(-1).args, { frame: 1 })
+    relay.reply = { http_status: 423, body: { error: 'Capability disabled', status: 'denied' } }
+    assert.equal((await run('call_computer_tool', { tool_name: 'exec_command', arguments: { command: 'pwd' } })).result.result.isError, true)
+    const before = relay.calls.length
+    await run('call_computer_tool', { tool_name: '../api/logout', arguments: {} })
+    assert.equal(relay.calls.length, before)
+    for (const [fail, error, expected] of [[504, 'timeout', /may have occurred/], [502, 'disconnected', /dropped during the call/], [409, 'not_connected', /not connected/]] as const) {
+      relay.reply = { fail, error }
+      const failed = (await run('call_computer_tool', { tool_name: 'write_file', arguments: { path: 'x', content: 'y' } })).result.result
+      assert.equal(failed.isError, true); assert.match(failed.content[0].text, expected)
+    }
+    // A paused or offline computer is refused before anything is sent to the hub.
+    const sent = relay.calls.length
+    await beat(device, { ...relaySnapshot('connected'), paused: true } as any)
+    assert.equal((await run('list_computer_tools', {})).result.result.isError, true)
+    db.prepare('UPDATE devices SET last_seen=? WHERE id=?').run(timestamp() - 61, device.id)
+    assert.equal((await run('list_computer_tools', {})).result.result.isError, true)
+    assert.equal(relay.calls.length, sent)
+    // Another account cannot reach a computer's relay.
+    db.prepare('UPDATE devices SET last_seen=?,user_id=? WHERE id=?').run(timestamp(), 'bob', device.id)
+    assert.equal((await run('list_computer_tools', {})).result.result.isError, true)
+    assert.equal(relay.calls.length, sent)
+    // Without a configured hub the service reports the relay as unavailable.
+    db.prepare('UPDATE devices SET user_id=? WHERE id=?').run('alice', device.id)
+    await beat(device, relaySnapshot('connected') as any)
+    delete env.RELAY
+    assert.match((await run('list_computer_tools', {})).result.result.content[0].text, /not available/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('a usable tunnel stays preferred; only an unreachable tunnel (530) falls back to the relay', async () => {
+  const device = await register(), client = await newMCPClient(), tokens = await mcpToken(client), relay = fakeRelay()
+  const gateway = 'https://owned-computer.trycloudflare.com/AB12cd34'
+  const run = (name: string, args: Record<string, unknown>) => rpc(tokens.access_token, 'tools/call', { name, arguments: { computer_id: device.id, ...args } })
+  const originalFetch = globalThis.fetch
+  let gatewayCalls = 0, reply = () => Response.json({ call_id: 'tunnel', result: { ok: true }, status: 'success' })
+  globalThis.fetch = async () => { gatewayCalls++; return reply() }
+  try {
+    await beat(device, relaySnapshot('connected', { state: 'ready', gateway }) as any)
+    const direct = (await run('list_computer_tools', {})).result.result
+    assert.equal(direct.isError, false); assert.match(direct.content[0].text, /tunnel/)
+    assert.equal(gatewayCalls, 1); assert.equal(relay.calls.length, 0)
+    // The edge says the connector is gone: the request never reached the computer.
+    reply = () => new Response('<html>Error 1033</html>', { status: 530, headers: { 'Content-Type': 'text/html' } })
+    const fallback = (await run('list_computer_tools', {})).result.result
+    assert.equal(fallback.isError, false); assert.equal(gatewayCalls, 2); assert.equal(relay.calls.length, 1)
+    // Other tunnel failures are never replayed over the relay; the call may have run.
+    for (const failure of [() => new Response('bad gateway', { status: 502 }), () => { throw new Error('timeout') }]) {
+      reply = failure as any
+      const failed = (await run('call_computer_tool', { tool_name: 'write_file', arguments: {} })).result.result
+      assert.equal(failed.isError, true)
+    }
+    assert.equal(relay.calls.length, 1)
+    // Without a connected relay a 530 stays an error.
+    await beat(device, relaySnapshot('off', { state: 'ready', gateway }) as any)
+    reply = () => new Response('<html>Error 1033</html>', { status: 530 })
+    assert.equal((await run('list_computer_tools', {})).result.result.isError, true)
+    assert.equal(relay.calls.length, 1)
+    // A tunnel host that is not approved falls back to a connected relay instead of failing.
+    await beat(device, relaySnapshot('connected', { state: 'ready', gateway: 'https://evil.example/AB12cd34' }) as any)
+    const before = gatewayCalls
+    assert.equal((await run('list_computer_tools', {})).result.result.isError, false)
+    assert.equal(gatewayCalls, before); assert.equal(relay.calls.length, 2)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('a standby relay is reported but never used; the tunnel stays the only path while it works', async () => {
+  const device = await register(), client = await newMCPClient(), tokens = await mcpToken(client), relay = fakeRelay(), token = await access()
+  const gateway = 'https://owned-computer.trycloudflare.com/AB12cd34'
+  const run = (name: string, args: Record<string, unknown>) => rpc(tokens.access_token, 'tools/call', { name, arguments: { computer_id: device.id, ...args } })
+  const originalFetch = globalThis.fetch
+  let gatewayCalls = 0
+  globalThis.fetch = async () => { gatewayCalls++; return Response.json({ call_id: 'tunnel', result: { ok: true }, status: 'success' }) }
+  try {
+    await beat(device, relaySnapshot('standby', { state: 'ready', gateway }) as any)
+    assert.deepEqual((await call('/api/v1/computers/' + device.id, 'GET', undefined, token.headers)).result.computer.relay, { state: 'standby' })
+    assert.equal((await run('list_computer_tools', {})).result.result.isError, false)
+    assert.equal(gatewayCalls, 1); assert.equal(relay.calls.length, 0)
+    // Standby holds no socket, so with no tunnel link there is nothing to relay through.
+    await beat(device, relaySnapshot('standby') as any)
+    const none = (await run('list_computer_tools', {})).result.result
+    assert.equal(none.isError, true); assert.equal(relay.calls.length, 0); assert.equal(gatewayCalls, 1)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('relay.stop is accepted for a standby relay', async () => {
+  const d = await register(), token = await access()
+  await beat(d, relaySnapshot('standby') as any)
+  const stop = await call('/api/v1/computers/' + d.id + '/commands', 'POST', { kind: 'relay.stop', payload: {}, request_id: randomToken() }, token.headers)
+  assert.equal(stop.response.status, 202)
+})

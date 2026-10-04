@@ -35,7 +35,10 @@ export function summary(d: Computer) {
       }
     } catch { /* A missing or invalid link is reported as unavailable. */ }
   }
-  return { id: d.id, name: d.name, platform: d.platform, last_seen: d.last_seen, online, version: snapshot.version || '', paused: snapshot.paused === true, enabled: snapshot.enabled || {}, connection: { state: online ? tunnel.state || 'stopped' : 'offline', mode: tunnel.mode || null }, links }
+  // Relay is opt-in on the computer. 'connected' means tool calls can be forwarded over
+  // the computer's WebSocket (through this service) when no tunnel link is usable.
+  const relay = snapshot.relay || {}, relayStates = ['off', 'standby', 'connecting', 'connected', 'error']
+  return { id: d.id, name: d.name, platform: d.platform, last_seen: d.last_seen, online, version: snapshot.version || '', paused: snapshot.paused === true, enabled: snapshot.enabled || {}, connection: { state: online ? tunnel.state || 'stopped' : 'offline', mode: tunnel.mode || null }, links, relay: { state: online && relayStates.includes(relay.state) ? relay.state as string : 'off' } }
 }
 export async function issueDiscoveryToken(env: Env, owner: User, sessionHash: string): Promise<Response> {
   const session = await env.DB.prepare('SELECT expires_at FROM sessions WHERE token_hash=? AND user_id=? AND expires_at>?').bind(sessionHash, owner.id, now()).first<{ expires_at: number }>()

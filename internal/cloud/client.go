@@ -33,15 +33,16 @@ type Result struct {
 	Error string `json:"error,omitempty"`
 }
 type Status struct {
-	URL           string    `json:"url"`
-	DeviceID      string    `json:"device_id,omitempty"`
-	Name          string    `json:"name"`
-	Email         string    `json:"email,omitempty"`
-	State         string    `json:"state"`
-	Message       string    `json:"message"`
-	LastHeartbeat time.Time `json:"last_heartbeat"`
-	LoginURL      string    `json:"login_url,omitempty"`
-	Code          string    `json:"code,omitempty"`
+	URL           string      `json:"url"`
+	DeviceID      string      `json:"device_id,omitempty"`
+	Name          string      `json:"name"`
+	Email         string      `json:"email,omitempty"`
+	State         string      `json:"state"`
+	Message       string      `json:"message"`
+	LastHeartbeat time.Time   `json:"last_heartbeat"`
+	LoginURL      string      `json:"login_url,omitempty"`
+	Code          string      `json:"code,omitempty"`
+	Relay         RelayStatus `json:"relay"`
 }
 type credentials struct {
 	URL      string `json:"url"`
@@ -58,17 +59,27 @@ type Options struct {
 	Execute       func(Command) error
 	Changed       func()
 	RedactSecrets func(...string)
-	Interval      time.Duration
+	// Relay runs one tool call received over the opt-in relay socket. Without it the
+	// relay answers every call with an error.
+	Relay func(context.Context, RelayCall) RelayReply
+	// TunnelReady reports whether public sharing has a working link. The relay stays on
+	// standby, without a connection, while it does.
+	TunnelReady func() bool
+	Interval    time.Duration
 }
 type Client struct {
-	lifecycle sync.Mutex
-	mu        sync.Mutex
-	opts      Options
-	creds     credentials
-	status    Status
-	cancel    context.CancelFunc
-	done      chan struct{}
-	results   []Result
+	lifecycle   sync.Mutex
+	mu          sync.Mutex
+	opts        Options
+	creds       credentials
+	status      Status
+	cancel      context.CancelFunc
+	done        chan struct{}
+	results     []Result
+	relayMu     sync.Mutex // serializes SetRelay
+	relay       RelayStatus
+	relayCancel context.CancelFunc
+	relayWake   chan struct{}
 }
 
 func New(opts Options) *Client {
@@ -83,7 +94,7 @@ func New(opts Options) *Client {
 	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	opts.Client = &copyClient
 	name, _ := os.Hostname()
-	c := &Client{opts: opts, creds: credentials{URL: opts.URL, Name: name}}
+	c := &Client{opts: opts, creds: credentials{URL: opts.URL, Name: name}, relayWake: make(chan struct{}, 1)}
 	if data, err := os.ReadFile(filepath.Join(opts.Dir, "cloud.json")); err == nil {
 		if err := json.Unmarshal(data, &c.creds); err != nil {
 			c.creds = credentials{URL: opts.URL, Name: name}
@@ -96,6 +107,12 @@ func New(opts Options) *Client {
 		}
 	}
 	c.status = Status{URL: c.creds.URL, Name: c.creds.Name, State: "signed_out", Message: "登录 Google，将这台电脑连接到网页"}
+	c.loadRelay()
+	if c.creds.Token == "" {
+		// Relay consent belongs to a bound account; never carry it over without one.
+		c.relay = RelayStatus{State: relayStateOff}
+	}
+	c.status.Relay = c.relay
 	if c.creds.Token != "" {
 		if opts.RedactSecrets != nil {
 			opts.RedactSecrets(c.creds.Token)
@@ -276,7 +293,7 @@ func (c *Client) Disconnect() error {
 			return err
 		}
 	}
-	for _, name := range []string{"cloud.json", "cloud-results.json"} {
+	for _, name := range []string{"cloud.json", "cloud-results.json", relayConfigFile} {
 		if err := os.Remove(filepath.Join(c.opts.Dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -284,7 +301,8 @@ func (c *Client) Disconnect() error {
 	c.mu.Lock()
 	c.creds.Token, c.creds.DeviceID, c.creds.Email = "", "", ""
 	c.results = nil
-	c.status = Status{URL: c.creds.URL, Name: c.creds.Name, State: "signed_out", Message: "已断开云端账号"}
+	c.relay = RelayStatus{State: relayStateOff}
+	c.status = Status{URL: c.creds.URL, Name: c.creds.Name, State: "signed_out", Message: "已断开云端账号", Relay: c.relay}
 	c.mu.Unlock()
 	c.changed()
 	return nil
@@ -294,6 +312,12 @@ func (c *Client) run(ctx context.Context, done chan struct{}, creds credentials)
 	c.runLoop(ctx, creds)
 }
 func (c *Client) runLoop(ctx context.Context, creds credentials) {
+	// The relay socket lives and dies with the heartbeat loop (sign-out, revocation, exit).
+	ctx, stopRelay := context.WithCancel(ctx)
+	var relayDone sync.WaitGroup
+	relayDone.Add(1)
+	go func() { defer relayDone.Done(); c.relayLoop(ctx, creds) }()
+	defer func() { stopRelay(); relayDone.Wait() }()
 	backoff := c.opts.Interval
 	for ctx.Err() == nil {
 		err := c.heartbeat(ctx, creds)

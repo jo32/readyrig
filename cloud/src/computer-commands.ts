@@ -9,6 +9,9 @@ export function validateCommand(kind: unknown, payload: unknown): { kind: string
   const p = payload as Record<string, unknown>
   if (kind === 'tunnel.start' && (p.mode === 'quick' || p.mode === 'fixed')) return { kind, payload: { mode: p.mode } }
   if (kind === 'tunnel.stop') return { kind, payload: {} }
+  // Relay can be switched off remotely but only started on the computer itself: it sends
+  // tool data through this service, so the person at the computer must agree to it.
+  if (kind === 'relay.stop') return { kind, payload: {} }
   if (kind === 'control.pause' && typeof p.paused === 'boolean') return { kind, payload: { paused: p.paused } }
   if (kind === 'capability.set' && typeof p.category === 'string' && ['files', 'terminal', 'computer', 'browser'].includes(String(p.category)) && typeof p.enabled === 'boolean') return { kind, payload: { category: p.category, enabled: p.enabled } }
   throw new HTTPError(400, '不支持的命令或配置')

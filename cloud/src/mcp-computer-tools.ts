@@ -1,8 +1,9 @@
 import type { Env } from './index.ts'
 import { HTTPError } from './http.ts'
 import { computer, summary } from './computer-discovery.ts'
+import { relayCall } from './relay.ts'
 
-type Identity = { user_id: string; grant_id: string }
+type Identity = { user_id: string; grant_id?: string }
 type ToolResult = { content: Record<string, unknown>[]; isError: boolean; structuredContent?: unknown }
 const maxResponseBytes = 8 * 1024 * 1024
 
@@ -29,18 +30,17 @@ async function readResult(response: Response): Promise<unknown> {
 }
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }
 
-export async function computerTool(env: Env, identity: Identity, deviceID: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
-  if (!/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name)) throw new HTTPError(400, 'Invalid computer tool name')
-  const device = summary(await computer(env, identity, deviceID))
-  if (!device.online) throw new HTTPError(409, 'Computer is offline. Open ReadyRig and keep the computer awake.')
-  if (device.paused) throw new HTTPError(423, 'Computer control is paused. Resume control only if authorized by the user.')
-  if (!device.links) throw new HTTPError(409, 'Public sharing is not ready. Start a quick tunnel with control_computer and wait for a ready connection.')
-  if (!permittedGateway(device.links.gateway, env)) throw new HTTPError(403, 'This tunnel host is not enabled for cloud tool calls. Use a quick tunnel, or ask the service administrator to allow this fixed hostname.')
-  const headers = { 'Content-Type': 'application/json', 'X-Session-ID': 'cloud-' + identity.grant_id, 'X-Client-Name': 'ReadyRig Cloud MCP' }
+type Raw = { ok: boolean; output: Record<string, unknown> }
+
+// A Cloudflare tunnel whose connector is gone answers 530 from its edge: the request never
+// reached the computer, so with a connected relay it is safe to send it there instead.
+async function viaGateway(gateway: string, session: string, name: string, args: Record<string, unknown>, fallback: boolean): Promise<Raw | null> {
+  const headers = { 'Content-Type': 'application/json', 'X-Session-ID': session, 'X-Client-Name': 'ReadyRig Cloud MCP' }
   let response: Response, output: unknown
   try {
-    response = await fetch(device.links.gateway + '/api/v1/tools/' + name, { method: 'POST', headers, body: JSON.stringify(args), redirect: 'manual', signal: AbortSignal.timeout(55000) })
+    response = await fetch(gateway + '/api/v1/tools/' + name, { method: 'POST', headers, body: JSON.stringify(args), redirect: 'manual', signal: AbortSignal.timeout(55000) })
     if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw new HTTPError(502, 'Computer URL redirected. Wait for a fresh heartbeat; this call was not retried.') }
+    if (response.status === 530 && fallback) { await response.body?.cancel(); return null }
     output = await readResult(response)
   } catch (error) {
     if (error instanceof HTTPError) throw error
@@ -48,7 +48,33 @@ export async function computerTool(env: Env, identity: Identity, deviceID: strin
     throw new HTTPError(502, 'Computer connection failed or timed out. Execution may have occurred. Check local activity or an existing command session before retrying.')
   }
   if (!object(output)) throw new HTTPError(502, 'Computer returned an invalid tool response')
-  const failed = !response.ok || !!output.error || ['denied', 'error'].includes(String(output.status))
+  return { ok: response.ok, output }
+}
+
+// Runs a tool and returns the computer's own response. The tunnel comes first. The opt-in
+// relay (connected only while the tunnel is not working) is used when there is no usable
+// tunnel link, or when the tunnel edge reports 530. Any other tunnel failure is never replayed
+// over the relay, because the call may already have run.
+async function computerToolRaw(env: Env, identity: Identity, deviceID: string, name: string, args: Record<string, unknown>): Promise<Raw> {
+  if (!/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name)) throw new HTTPError(400, 'Invalid computer tool name')
+  const device = summary(await computer(env, identity, deviceID))
+  if (!device.online) throw new HTTPError(409, 'Computer is offline. Open ReadyRig and keep the computer awake.')
+  if (device.paused) throw new HTTPError(423, 'Computer control is paused. Resume control only if authorized by the user.')
+  const relayReady = device.relay.state === 'connected', session = 'cloud-' + (identity.grant_id || 'api')
+  const tunnelUsable = !!device.links && permittedGateway(device.links.gateway, env)
+  if (!tunnelUsable && !relayReady) {
+    if (!device.links) throw new HTTPError(409, 'Public sharing is not ready. Start a quick tunnel with control_computer and wait for a ready connection. If a tunnel is not possible, the user can turn on relay mode in ReadyRig on that computer (tool data then passes through ReadyRig Cloud).')
+    throw new HTTPError(403, 'This tunnel host is not enabled for cloud tool calls. Use a quick tunnel, or ask the service administrator to allow this fixed hostname.')
+  }
+  const raw = tunnelUsable ? await viaGateway(device.links!.gateway, session, name, args, relayReady) : null
+  if (raw) return raw
+  const reply = await relayCall(env, device.id, { tool: name, args, session, client: 'ReadyRig Cloud MCP' })
+  if (!object(reply.body)) throw new HTTPError(502, 'Computer returned an invalid tool response')
+  return { ok: reply.http_status >= 200 && reply.http_status < 300, output: reply.body }
+}
+export async function computerTool(env: Env, identity: Identity, deviceID: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const { ok, output } = await computerToolRaw(env, identity, deviceID, name, args)
+  const failed = !ok || !!output.error || ['denied', 'error'].includes(String(output.status))
   const value = output.result
   // Chrome tools already contain MCP text/image/structured result blocks.
   if (object(value) && Array.isArray(value.content)) {

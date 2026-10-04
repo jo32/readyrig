@@ -206,6 +206,10 @@ func runTUI(f *flag.FlagSet, o *startupOptions) error {
 				if u.tab == 4 {
 					u.login(results)
 				}
+			case "m":
+				if u.tab == 4 {
+					u.toggleRelay(results)
+				}
 			case "\r", "\n":
 				if u.tab == 1 && u.selected < len(u.state.Projects.Projects) {
 					u.request("/api/projects", map[string]string{"action": "activate", "id": u.state.Projects.Projects[u.selected].ID}, results)
@@ -220,6 +224,22 @@ func runTUI(f *flag.FlagSet, o *startupOptions) error {
 			}
 		}
 	}
+}
+
+// Relay mode sends tool data through the cloud service, so turning it on needs an
+// explicit typed confirmation. Turning it off does not.
+const relayPrompt = "Relay backup: if the tunnel is down, tool data passes through the cloud server. Type yes"
+
+func (u *terminalUI) toggleRelay(results chan<- error) {
+	if u.cloud.DeviceID == "" {
+		u.message = "Sign in with Google first (l); relay mode needs a linked account."
+		return
+	}
+	if u.cloud.Relay.Enabled {
+		u.request("/api/cloud/relay", map[string]any{"enabled": false}, results)
+		return
+	}
+	u.prompt, u.input = relayPrompt, ""
 }
 
 func (u *terminalUI) login(results chan<- error) {
@@ -289,6 +309,8 @@ func (u *terminalUI) editPrompt(key string, results chan<- error) {
 			u.request("/api/projects", map[string]string{"action": "add", "path": path}, results)
 		} else if prompt == "Disconnect cloud account or cancel login? Type yes" && input == "yes" {
 			u.request("/api/cloud/disconnect", map[string]any{}, results)
+		} else if prompt == relayPrompt && input == "yes" {
+			u.request("/api/cloud/relay", map[string]any{"enabled": true, "acknowledged": true}, results)
 		} else if prompt == "Remove access to selected project? Type yes" && input == "yes" && u.selected < len(u.state.Projects.Projects) {
 			u.request("/api/projects", map[string]string{"action": "remove", "id": u.state.Projects.Projects[u.selected].ID}, results)
 		}
@@ -457,8 +479,18 @@ func (u *terminalUI) renderAccount(width int) []string {
 	if state == "" {
 		state = "not connected"
 	}
-	items := []string{"l sign in with Google   d disconnect / cancel login", "",
+	items := []string{"l sign in with Google   d disconnect / cancel login   m relay mode", "",
 		"Status    " + state, "Computer  " + u.cloud.Name, "Account   " + u.cloud.Email}
+	if u.cloud.DeviceID != "" {
+		relay := u.cloud.Relay.State
+		if !u.cloud.Relay.Enabled || relay == "" {
+			relay = "off (default; m turns it on)"
+		}
+		items = append(items, "Relay     "+relay)
+		if u.cloud.Relay.Enabled {
+			items = append(items, "          Standby while the tunnel works; otherwise tool data passes through the cloud server. m turns it off.")
+		}
+	}
 	if u.cloudError != "" {
 		items = append(items, "Unable to read account status: "+u.cloudError)
 	}

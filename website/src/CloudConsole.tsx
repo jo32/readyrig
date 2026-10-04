@@ -22,6 +22,7 @@ type Device = {
     paused?: boolean
     enabled?: Record<string, boolean>
     tunnel?: { state?: string; message?: string; mode?: string; gateway?: string; mcp?: string; console?: string }
+    relay?: { state?: string; message?: string }
   }
 }
 type Command = {
@@ -36,6 +37,7 @@ type Pair = { name: string; platform: string; code: string; approved: boolean }
 const commandNames: Record<string, string> = {
   'tunnel.start': '开启公网',
   'tunnel.stop': '关闭公网',
+  'relay.stop': '关闭云端转发',
   'control.pause': '调整暂停状态',
   'capability.set': '调整能力开关',
 }
@@ -46,6 +48,16 @@ const statusNames: Record<string, string> = {
   failed: '执行失败',
   expired: '已过期',
   revoked: '设备已解绑',
+}
+// Relay is an opt-in backup for when the public link is unavailable. The console only reports it
+// and can switch it off; turning it on needs the person at the computer, because it sends tool
+// data through this service. While the public link works the relay stays on standby.
+const relayStatusNames: Record<string, string> = {
+  off: '未开启',
+  standby: '待命',
+  connecting: '连接中',
+  connected: '已连接',
+  error: '连接失败',
 }
 const capabilities: Record<string, string> = {
   files: '文件',
@@ -122,12 +134,46 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
       setBusy(false)
     }
   }
+  // A computer uses a direct link or ReadyRig cloud, so switching turns cloud forwarding off first.
+  // Commands run one at a time in order, so the link only starts after the relay has stopped.
+  const switchToDirect = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/api/devices/${device.id}/commands`, 'POST', { kind: 'relay.stop', payload: {}, request_id: crypto.randomUUID() })
+      await api(`/api/devices/${device.id}/commands`, 'POST', { kind: 'tunnel.start', payload: { mode }, request_id: crypto.randomUUID() })
+      await load()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
   const snapshot = device.snapshot,
     tunnel = snapshot.tunnel || {},
     pending = commands.some((c) => c.status === 'queued' || c.status === 'executing'),
     disabled = busy || pending || !device.online
+  const relay = snapshot.relay || {},
+    relayState = device.online && relay.state && relayStatusNames[relay.state] ? relay.state : 'off',
+    relayOn = relayState !== 'off'
+  const tunnelReady = tunnel.state === 'ready',
+    summaryLine =
+      tunnelReady && relayState === 'standby'
+        ? '直连链接已开启 · 云端备用待命'
+        : !tunnelReady && relayState === 'connected'
+          ? tunnel.state === 'stopped' || !tunnel.state
+            ? '经 ReadyRig 云端已连接'
+            : '直连链接未就绪 · 云端备用已连接'
+          : tunnelReady
+            ? '已开启'
+            : tunnel.state && ['installing', 'starting', 'stopping'].includes(tunnel.state)
+              ? '正在连接或关闭'
+              : '未开启',
+    mcpURL = `${window.location.origin}/mcp`
   const active = ['installing', 'starting', 'ready', 'stopping'].includes(tunnel.state || '')
   const prompt = tunnel.state === 'ready' && tunnel.gateway ? publicConnectionPrompt(tunnel.gateway, tunnel.mode, t) : ''
+  // ReadyRig cloud is carrying the connection (no tunnel is running): show that route alone.
+  const cloudActive = relayOn && relayState !== 'standby' && !active
   return (
     <article className="cloud-device">
       <div className="cloud-device-heading">
@@ -163,10 +209,17 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
         <section className="cloud-sharing" aria-label={t('公网访问')}>
           <div className="cloud-section-heading">
             <h3>{t('公网访问')}</h3>
-            <span className={`cloud-tunnel-status ${tunnel.state === 'ready' ? 'ready' : ''}`}>
-              {t(tunnel.state === 'ready' ? '已开启' : active ? '正在连接或关闭' : '未开启')}
-            </span>
+            <span className={`cloud-tunnel-status ${tunnelReady || relayState === 'connected' ? 'ready' : ''}`}>{t(summaryLine)}</span>
           </div>
+          {!cloudActive && (
+          <div className="cloud-route">
+          <div className="cloud-route-head">
+            <strong>{t('直连链接')}</strong>
+            <span className="cloud-route-badge">{t('推荐')}</span>
+          </div>
+          <p className="cloud-route-flow">
+            {t('Agent → Cloudflare → 这台电脑')} · {t('数据不经过 ReadyRig 服务器')}
+          </p>
           <p className="cloud-sharing-copy">
             {t(
               tunnel.state === 'ready'
@@ -221,6 +274,60 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
             </>
           )}
           {tunnel.state === 'error' && tunnel.message && <p className="cloud-error">{t(tunnel.message)}</p>}
+          </div>
+          )}
+          <div className={`cloud-route ${relayState === 'connected' ? 'is-active' : ''}`}>
+            <div className="cloud-route-head">
+              <strong>{t('经 ReadyRig 云端')}</strong>
+              <span className={`cloud-tunnel-status ${relayState === 'connected' ? 'ready' : ''}`}>
+                {t(relayStatusNames[relayState])}
+              </span>
+              {relayOn && (
+                <button
+                  className="button button-secondary"
+                  disabled={disabled}
+                  onClick={() => void send('relay.stop', {})}
+                >
+                  {t('关闭云端转发')}
+                </button>
+              )}
+            </div>
+            <p className="cloud-route-flow">
+              {t('Agent → ReadyRig 云端 → 这台电脑')} · {t('数据会经过 ReadyRig 服务器')}
+            </p>
+            <p className={`cloud-route-copy ${relayOn && relayState !== 'standby' ? 'cloud-relay-warning' : ''}`}>
+              {t(
+                relayState === 'off'
+                  ? '在这台电脑的 ReadyRig 中开启。可作为直连链接失效时的备用，也可单独使用。'
+                  : relayState === 'standby'
+                    ? '直连链接正常时待命，不传数据。'
+                    : '文件内容、命令输出和截图正经 ReadyRig 服务器转发。',
+              )}
+            </p>
+            {relayState === 'connected' && (
+              <div className="cloud-address">
+                <label>{t('MCP 地址（在 AI 应用中添加）')}</label>
+                <code>{mcpURL}</code>
+                <button
+                  className="button button-secondary"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(mcpURL).catch(() => setError(t('复制失败，请手动复制地址')))
+                  }}
+                >
+                  {t('复制地址')}
+                </button>
+              </div>
+            )}
+            {relayState === 'error' && relay.message && <p className="cloud-error">{t(relay.message)}</p>}
+          </div>
+          {cloudActive && (
+            <div className="cloud-route-switch">
+              <button className="button button-secondary" disabled={disabled} onClick={() => void switchToDirect()}>
+                {t('改用直连链接')}
+              </button>
+              <p>{t('会先关闭云端转发，再开启直连链接。')}</p>
+            </div>
+          )}
         </section>
         <section className="cloud-access" aria-label={t('访问权限')}>
           <div className="cloud-section-heading">

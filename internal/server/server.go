@@ -116,7 +116,16 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, fmt.Errorf("session/client header too long"))
 		return
 	}
-	out, call, err := s.Registry.Invoke(r.Context(), r.PathValue("name"), harness.Invocation{Session: session, Client: client, Arguments: raw})
+	status, body := s.runTool(r.Context(), r.PathValue("name"), raw, session, client)
+	w.WriteHeader(status)
+	write(w, body)
+}
+
+// runTool executes one tool call and returns the HTTP status and body the gateway
+// replies with. The public gateway and the opt-in cloud relay share it, so both
+// apply the same capability, pause and project checks and the same logging.
+func (s *Server) runTool(ctx context.Context, name string, raw []byte, session, client string) (int, map[string]any) {
+	out, call, err := s.Registry.Invoke(ctx, name, harness.Invocation{Session: session, Client: client, Arguments: raw})
 	status := 200
 	if err != nil {
 		status = 422
@@ -124,7 +133,6 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 			status = 423
 		}
 	}
-	w.WriteHeader(status)
 	body := map[string]any{"call_id": call.ID, "result": out.Value, "error": call.Error, "status": call.Status}
 	if err != nil {
 		body["error_code"] = harness.ErrorCode(err)
@@ -137,10 +145,10 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 		body["status"], body["error"] = "success", ""
 	}
 	sid := harness.SessionOrDefault(session)
-	if notices := harness.WithoutOwn(append(s.Registry.TakeNotices(sid), s.Registry.ProgressFor(sid, r.PathValue("name"))...), out.Value); len(notices) > 0 {
+	if notices := harness.WithoutOwn(append(s.Registry.TakeNotices(sid), s.Registry.ProgressFor(sid, name)...), out.Value); len(notices) > 0 {
 		body["notices"] = NoticeValues(notices)
 	}
-	write(w, body)
+	return status, body
 }
 func (s *Server) UI() http.Handler {
 	mux := http.NewServeMux()

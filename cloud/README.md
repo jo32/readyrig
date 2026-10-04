@@ -9,6 +9,24 @@ The website, device console, and API share one Cloudflare Worker. D1 stores Goog
 
 See the [project README](../README.md) for the local app and the [changelog](../CHANGELOG.md) for version history.
 
+## Relay mode
+
+Relay is an opt-in backup that lets a computer whose Cloudflare tunnel is down or unavailable serve cloud MCP tool calls over a WebSocket. It is off by default. **Unlike a tunnel, tool arguments and results pass through this service while the relay is connected.** They are forwarded in memory by a Durable Object and never written to D1 or logs; only the connection state is stored (as part of the heartbeat snapshot).
+
+```text
+MCP client ──/mcp──▶ Worker ──▶ RelayHub (Durable Object, one per computer) ◀══ WebSocket ══ ReadyRig app
+```
+
+- `GET /api/agent/relay` with `Authorization: Bearer <device credential>` and a WebSocket upgrade. The device credential is the one used for heartbeats; browser sessions and Bearer discovery tokens cannot open it. A new connection replaces the old one, and unbinding or revoking a computer closes its socket.
+- Frames are JSON text. Hub → app: `{"type":"call","id","tool","session","client","arguments"}` and `{"type":"cancel","id"}`. App → hub: `{"type":"result","id","http_status","body"}`, where `body` is the response the computer's own gateway would return for `POST /api/v1/tools/{tool}`. The app sends the text `ping` every 25 seconds and the hub answers `pong` without waking.
+- Calls time out after 55 seconds, at which point the hub sends `cancel`. A timeout or a dropped socket reports that execution may have occurred; a computer with no socket reports that nothing was sent. Calls are never retried. The app runs at most eight at once and refuses results over 8 MiB.
+- The app keeps the socket open only while its tunnel is not ready; with a working tunnel the relay is `standby` and nothing is connected. `computerTool` tries the tunnel first and uses the relay when the computer reports `relay.state: "connected"` and there is no usable link, or the tunnel edge answers `530`. Other tunnel failures are not replayed over the relay.
+- Computers report `relay: { state, message }` (`off`, `standby`, `connecting`, `connected`, `error`) in the heartbeat snapshot. `GET /api/v1/computers` returns `relay: { state }`, which is `off` for an offline computer.
+- `relay.stop` (payload `{}`) turns relay off. There is deliberately no command that turns it on, because that needs the consent of the person at the computer. The app enables it with the local console, `readyrig cloud relay on --yes`, or the terminal dashboard.
+- The cloud REST API does not relay tool calls. Only the MCP tools do, so REST-only agents still need a tunnel.
+
+The Worker needs the `RELAY` Durable Object binding and the `v1-relay` migration in `wrangler.jsonc` (a SQLite-backed class, so it works on the free plan). `npm run deploy` applies them. Without the binding the service answers `503` to relay connections and apps report that relay mode is unavailable.
+
 ## Production domain and recovery
 
 `readyrig.getmegaportal.com` uses a proxied Cloudflare `AAAA 100::` record. The `readyrig-cloud` Worker's `readyrig.getmegaportal.com/*` route handles every path without a Vercel origin. The Google OAuth client includes the production callback, and the app's default cloud URL uses this domain.
@@ -88,6 +106,7 @@ To enable shell access, submit this JSON to the command endpoint:
 | `capability.set` | `category`: `files`, `terminal`, `browser` or `computer`; boolean `enabled` | Change a tool capability switch |
 | `tunnel.start` | `mode`: `quick` or `fixed` | Start public sharing; fixed mode uses the computer's saved configuration |
 | `tunnel.stop` | `{}` | Stop public sharing |
+| `relay.stop` | `{}` | Turn relay mode off (it can only be turned on at the computer) |
 | `control.pause` | Boolean `paused` | Pause or resume tool control |
 
 A submission returns HTTP 202 with `id`, `kind`, `payload`, and `status`. It initially has status `queued`; the computer receives it on its next heartbeat and reports `completed` or `failed`. Poll command receipts for that ID before claiming success. Commands share the console's queue, with at most 20 pending/executing commands. Pending requests expire after five minutes, and unconfirmed execution expires after 90 seconds without automatic redelivery. Offline computers must reconnect to execute requests. Retries use the same `request_id` (at most 64 UTF-8 bytes) and identical command; a conflicting reuse returns 409. An idempotent retry works even if the queue is full.
@@ -181,6 +200,8 @@ Local capability switches, pause state, folder boundaries, Full Access and syste
 permissions still apply. The cloud forwards arguments and results, including
 screenshots, but never forwards the cloud OAuth token to the computer.
 Calls are not retried automatically if execution has an uncertain outcome.
+
+When no tunnel is usable and the computer has opted in to [relay mode](#relay-mode), the same two tools forward over its WebSocket instead.
 
 The relay permits HTTPS `*.trycloudflare.com` gateways by default. For fixed
 tunnels, set the comma-separated `MCP_ALLOWED_TUNNEL_HOSTS` Worker variable to

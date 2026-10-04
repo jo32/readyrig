@@ -13,6 +13,8 @@
     "run_worker_first": true
   },
   "vars": { "PUBLIC_ORIGIN": "https://readyrig.getmegaportal.com", "LEGACY_ORIGIN": "https://readyrig-cloud.megaportal.workers.dev", "GOOGLE_CLIENT_ID": "20513456565-iispcrbco3idk2taje3jnq19k80qqo2n.apps.googleusercontent.com" },
+  "durable_objects": { "bindings": [{ "name": "RELAY", "class_name": "RelayHub" }] },
+  "migrations": [{ "tag": "v1-relay", "new_sqlite_classes": ["RelayHub"] }],
   "d1_databases": [{ "binding": "DB", "database_name": "readyrig-cloud", "database_id": "83ed9c5d-45eb-4fe3-b81a-10b3a9d8a55f", "migrations_dir": "migrations" }],
   "triggers": { "crons": ["17 3 * * *"] }
 }
