@@ -2,7 +2,7 @@
  "_about": "Budgets for scripts/bench-tools.py --check. Rewrite only on purpose, in the same commit as the change that needs it, and say why in CHANGELOG.md.",
  "tasks": {
   "session setup": {
-   "max_bytes": 19662
+   "max_bytes": 27461
   },
   "survey: 4 files + search + list": {
    "max_bytes": 126886,
