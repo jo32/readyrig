@@ -2,6 +2,12 @@
 
 Notable changes to ReadyRig are recorded here. For setup and current behavior, see the [README](README.md).
 
+## 0.6.17
+
+### Fixed
+
+- Screenshot previews now display in the local and gateway dashboards. The image content security policy now allows the blob URLs used by screenshot previews.
+
 ## 0.6.16
 
 ### Added

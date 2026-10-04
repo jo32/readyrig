@@ -42,6 +42,40 @@ func request(h http.Handler, method, path, body, accessPath string) *httptest.Re
 	return w
 }
 
+func TestDashboardAllowsScreenshotBlobImages(t *testing.T) {
+	s := fixture(t)
+	for name, handler := range map[string]http.Handler{
+		"local":   s.BrowserGuard(s.UI()),
+		"gateway": s.Gateway(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := "http://127.0.0.1:7331/"
+			if name == "gateway" {
+				path += s.AccessPath + "/app/"
+			}
+			w := request(handler, "GET", path, "", "")
+			if w.Code != http.StatusOK {
+				t.Fatalf("dashboard returned %d", w.Code)
+			}
+			directives := map[string]string{}
+			for _, directive := range strings.Split(w.Header().Get("Content-Security-Policy"), ";") {
+				fields := strings.Fields(directive)
+				if len(fields) > 0 {
+					directives[fields[0]] = strings.Join(fields[1:], " ")
+				}
+			}
+			if directives["img-src"] != "'self' data: blob:" {
+				t.Fatalf("screenshot object URLs must be allowed: %v", directives)
+			}
+			for _, directive := range []string{"default-src", "script-src", "connect-src"} {
+				if directives[directive] != "'self'" {
+					t.Fatalf("%s must remain restricted to self: %v", directive, directives)
+				}
+			}
+		})
+	}
+}
+
 func TestCLIInstallationStatusIsLocalOnly(t *testing.T) {
 	s := fixture(t)
 	s.CLI = &cliinstall.Status{State: "installed", Path: "/Users/private/.local/bin/readyrig"}
