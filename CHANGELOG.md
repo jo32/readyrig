@@ -4,6 +4,8 @@ Notable changes to ReadyRig are recorded here. For setup and current behavior, s
 
 ## Unreleased
 
+## 0.6.20
+
 ### Fixed
 
 - A slim `help` listing lost its explanatory note whenever advanced-group tools existed, because the advanced-tools note overwrote it. Both notes are now kept.
