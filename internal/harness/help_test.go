@@ -136,3 +136,77 @@ func TestHelpCompactAndAdvancedGroup(t *testing.T) {
 		t.Fatal("ExposeAll ignored")
 	}
 }
+
+func TestHelpNamesAndCategory(t *testing.T) {
+	r := registryForTest(t)
+	r.RegisterHelp()
+	r.Register(Tool{Spec: Spec{Name: "alpha", Category: "files", Parallel: true, Description: "Alpha. More detail.", InputSchema: Schema(map[string]any{"n": Prop("integer", "count")})}, Run: func(context.Context, Invocation) (Output, error) { return Output{}, nil }})
+	r.Register(Tool{Spec: Spec{Name: "beta", Category: "files", Parallel: true, Description: "Beta.", InputSchema: Schema(map[string]any{})}, Run: func(context.Context, Invocation) (Output, error) { return Output{}, nil }})
+
+	got := helpResult(t, r, map[string]any{"names": []string{"alpha", "missing", "beta"}})
+	if got.Total != 2 || got.Tools[0].Name != "alpha" || got.Tools[0].InputSchema == nil || got.Tools[1].Name != "beta" {
+		t.Fatal(got)
+	}
+	if len(got.Unknown) != 1 || got.Unknown[0] != "missing" {
+		t.Fatal(got.Unknown)
+	}
+	// Naming tools wins over compact: the caller asked for the detail.
+	if c := helpResult(t, r, map[string]any{"names": []string{"alpha"}, "compact": true}); c.Tools[0].InputSchema == nil || c.Tools[0].Description != "Alpha. More detail." {
+		t.Fatal(c)
+	}
+	files := helpResult(t, r, map[string]any{"category": "files", "compact": true})
+	if files.Total != 2 || files.Tools[0].InputSchema != nil {
+		t.Fatal(files)
+	}
+	if none := helpResult(t, r, map[string]any{"category": "nope"}); none.Total != 0 {
+		t.Fatal(none)
+	}
+	if _, err := invoke(t, r, "help", map[string]any{"names": "alpha"}); err == nil {
+		t.Fatal("names must be an array")
+	}
+}
+
+func TestHelpSlimListing(t *testing.T) {
+	r := registryForTest(t)
+	r.RegisterHelp()
+	r.Register(Tool{Spec: Spec{Name: "reader", Category: "files", Parallel: true, Description: "Reads. More.", Annotations: map[string]any{"readOnlyHint": true}, InputSchema: Schema(map[string]any{})}, Run: func(context.Context, Invocation) (Output, error) { return Output{}, nil }})
+	r.Register(Tool{Spec: Spec{Name: "writer", Category: "files", Mutating: true, Description: "Writes.", InputSchema: Schema(map[string]any{})}, Run: func(context.Context, Invocation) (Output, error) { return Output{}, nil }})
+	out, err := invoke(t, r, "help", map[string]any{"compact": true, "slim": true, "category": "files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out.Value)
+	var got struct {
+		Note  string           `json:"note"`
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Note, "Slim listing") || len(got.Tools) != 2 {
+		t.Fatal(got)
+	}
+	reader, writer := got.Tools[0], got.Tools[1]
+	if reader["parallel"] != true || reader["description"] != "Reads." {
+		t.Fatal(reader)
+	}
+	if writer["mutating"] != true {
+		t.Fatal(writer)
+	}
+	for _, tool := range got.Tools {
+		for _, key := range []string{"enabled", "available", "annotations", "inputSchema"} {
+			if _, has := tool[key]; has {
+				t.Fatalf("slim entry still has %s: %v", key, tool)
+			}
+		}
+	}
+	if _, has := reader["mutating"]; has {
+		t.Fatal("default mutating=false was sent")
+	}
+	// Without slim the flags stay, and named lookups are never slimmed.
+	full := helpResult(t, r, map[string]any{"names": []string{"reader"}, "slim": true})
+	fb, _ := json.Marshal(full.Tools[0])
+	if !strings.Contains(string(fb), `"enabled":true`) || full.Tools[0].InputSchema == nil {
+		t.Fatal(string(fb))
+	}
+}

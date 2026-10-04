@@ -18,12 +18,48 @@ type ToolHelp struct {
 	Available         bool           `json:"available"`
 	UnavailableReason string         `json:"unavailable_reason,omitempty"`
 	Permission        string         `json:"permission_required,omitempty"`
+	slim              bool
 }
+
+// slimFlagsNote defines the omission rule for slim listings, so an absent flag is never ambiguous.
+const slimFlagsNote = "Slim listing: mutating and parallel appear only when true; enabled and available only when false (absent means the opposite). Use names for full entries with schemas."
+
+// MarshalJSON writes the full entry, or in slim mode drops default-valued flags and
+// redundant annotations so a browse list stays cheap in an agent's context.
+func (h ToolHelp) MarshalJSON() ([]byte, error) {
+	if !h.slim {
+		type full ToolHelp
+		return json.Marshal(full(h))
+	}
+	out := struct {
+		Name              string `json:"name"`
+		Description       string `json:"description"`
+		Category          string `json:"category"`
+		Mutating          bool   `json:"mutating,omitempty"`
+		Parallel          bool   `json:"parallel,omitempty"`
+		Group             string `json:"group,omitempty"`
+		Enabled           *bool  `json:"enabled,omitempty"`
+		Available         *bool  `json:"available,omitempty"`
+		UnavailableReason string `json:"unavailable_reason,omitempty"`
+		Permission        string `json:"permission_required,omitempty"`
+	}{Name: h.Name, Description: h.Description, Category: h.Category, Mutating: h.Mutating, Parallel: h.Parallel,
+		Group: h.Group, UnavailableReason: h.UnavailableReason, Permission: h.Permission}
+	if !h.Enabled {
+		out.Enabled = &h.Enabled
+	}
+	if !h.Available {
+		out.Available = &h.Available
+	}
+	return json.Marshal(out)
+}
+
 type HelpResult struct {
-	Paused bool       `json:"paused"`
-	Total  int        `json:"total"`
-	Note   string     `json:"note,omitempty"`
-	Tools  []ToolHelp `json:"tools"`
+	Paused bool   `json:"paused"`
+	Total  int    `json:"total"`
+	Note   string `json:"note,omitempty"`
+	// Unknown lists requested names that are not registered.
+	Unknown []string   `json:"unknown,omitempty"`
+	Tools   []ToolHelp `json:"tools"`
 }
 
 // firstSentence keeps compact listings short.
@@ -39,13 +75,16 @@ func firstSentence(s string) string {
 
 func (r *Registry) RegisterHelp() {
 	r.Register(Tool{
-		Spec:                Spec{Name: "help", Category: "system", Description: "List tools with full schemas, compact=true for names and one line each, or name for one tool. include_disabled also shows blocked tools. Tools in group advanced are not in tools/list; run them with use_tool. Works while paused.", Parallel: true, InputSchema: Schema(map[string]any{"name": Prop("string", "Exact tool name to inspect; omit to list tools"), "include_disabled": Prop("boolean", "Include registered tools unavailable due to capability settings or pause; default false"), "compact": Prop("boolean", "List names and one-line descriptions without schemas")}), Annotations: map[string]any{"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}},
+		Spec:                Spec{Name: "help", Category: "system", Description: "List tools with full schemas; compact=true for names and one line each (slim=true also omits default flags); name or names for specific tools; category to filter; include_disabled shows blocked tools. Advanced-group tools are not in tools/list; run them with use_tool. Works while paused.", Parallel: true, InputSchema: Schema(map[string]any{"name": Prop("string", "Exact tool name to inspect"), "names": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 40, "description": "Tool names to inspect; unknown ones are returned in unknown"}, "include_disabled": Prop("boolean", "Include unavailable tools"), "compact": Prop("boolean", "Names and one-line descriptions, no schemas"), "slim": Prop("boolean", "With compact: omit default-valued flags"), "category": Prop("string", "Only this category")}), Annotations: map[string]any{"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}},
 		AvailableWhenPaused: true,
 		Run: func(ctx context.Context, in Invocation) (Output, error) {
 			var args struct {
-				Name            string `json:"name"`
-				IncludeDisabled bool   `json:"include_disabled"`
-				Compact         bool   `json:"compact"`
+				Name            string   `json:"name"`
+				IncludeDisabled bool     `json:"include_disabled"`
+				Compact         bool     `json:"compact"`
+				Slim            bool     `json:"slim"`
+				Names           []string `json:"names"`
+				Category        string   `json:"category"`
 			}
 			if err := Decode(in.Arguments, &args); err != nil {
 				return Output{}, err
@@ -60,10 +99,25 @@ func (r *Registry) RegisterHelp() {
 					return Output{}, fmt.Errorf("tool %q is not currently registered; call help with {} for the live list", args.Name)
 				}
 			}
+			wanted := map[string]bool{}
+			if args.Name != "" {
+				wanted[args.Name] = true
+			}
 			result := HelpResult{Paused: r.paused, Tools: []ToolHelp{}}
+			for _, name := range args.Names {
+				if _, ok := r.tools[name]; !ok {
+					if !wanted[name] {
+						result.Unknown = append(result.Unknown, name)
+					}
+					continue
+				}
+				wanted[name] = true
+			}
+			// Selecting tools by name returns full schemas, even for unavailable ones, so the reason is visible.
+			selected := len(wanted) > 0
 			hidden := false
 			for _, name := range r.order {
-				if args.Name != "" && args.Name != name {
+				if (selected && !wanted[name]) || (args.Category != "" && r.tools[name].Spec.Category != args.Category) {
 					continue
 				}
 				t := r.tools[name]
@@ -74,7 +128,7 @@ func (r *Registry) RegisterHelp() {
 				} else if !h.Available {
 					h.UnavailableReason = "control_paused"
 				}
-				if args.Name == "" && !args.IncludeDisabled && !h.Available {
+				if !selected && !args.IncludeDisabled && !h.Available {
 					continue
 				}
 				// A missing OS permission keeps the tool listed but marks it unusable, with the reason.
@@ -86,14 +140,18 @@ func (r *Registry) RegisterHelp() {
 				if t.Spec.Group == "advanced" && !r.ExposeAll {
 					hidden = true
 				}
-				if args.Compact && args.Name == "" {
+				if args.Compact && !selected {
 					h.InputSchema = nil
 					h.Spec.InputSchema = nil
 					h.Spec.Description = firstSentence(h.Spec.Description)
+					h.slim = args.Slim
 				}
 				result.Tools = append(result.Tools, h)
 			}
 			result.Total = len(result.Tools)
+			if args.Compact && args.Slim && !selected {
+				result.Note = strings.TrimSpace(result.Note + " " + slimFlagsNote)
+			}
 			if hidden {
 				result.Note = "Tools in group advanced are not listed by tools/list; run them with use_tool {name, arguments}."
 			}

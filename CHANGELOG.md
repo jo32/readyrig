@@ -4,6 +4,14 @@ Notable changes to ReadyRig are recorded here. For setup and current behavior, s
 
 ## Unreleased
 
+### Changed
+
+- The cloud MCP's `list_computer_tools` now returns a compact list by default (names, one-line descriptions, and flags only when non-default) instead of every full schema, which cut discovery from about 9.3K to 1.6K tokens on a 35-tool computer. Pass `names` to get full schemas for just the tools you need, `category` to filter, or `compact: false` for the full catalogue. Computers on an older app version still work: the cloud retries without options they do not know.
+
+### Added
+
+- `help` accepts `names` (full schemas for several tools, unknown ones reported in `unknown`), `category`, and `slim` (with `compact`, omits default-valued flags and annotations).
+
 ## 0.6.18
 
 ### Added

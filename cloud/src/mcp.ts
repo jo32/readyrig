@@ -7,7 +7,7 @@ import { commandHistory, queueCommand } from './computer-commands.ts'
 
 const idSchema = { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$', description: 'Computer ID from list_computers' }
 const tools = [
-  { name: 'list_computer_tools', description: 'Discover enabled file, terminal, browser and desktop tools and their exact argument schemas on a computer. Call this before call_computer_tool. Requires the computer online with public sharing ready or relay mode connected.', inputSchema: { type: 'object', properties: { computer_id: idSchema }, required: ['computer_id'], additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true } },
+  { name: 'list_computer_tools', description: 'Discover enabled file, terminal, browser and desktop tools on a computer. By default returns a compact list (names and one-line descriptions; mutating/parallel shown only when true, enabled/available only when false); then pass names to get the exact argument schemas of just the tools you need, or compact=false for every schema. category narrows the list. Call this before call_computer_tool. Requires the computer online with public sharing ready or relay mode connected.', inputSchema: { type: 'object', properties: { computer_id: idSchema, names: { type: 'array', items: { type: 'string' }, maxItems: 40, description: 'Tool names to return full schemas for; unknown names come back in unknown' }, compact: { type: 'boolean', description: 'Default true unless names is given; false returns every full schema (large)' }, category: { type: 'string', description: 'Only list tools in this category, for example files, terminal, computer, browser or safari' } }, required: ['computer_id'], additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true } },
   { name: 'call_computer_tool', description: 'Run an enabled tool on an owned computer through ReadyRig Cloud. Use list_computer_tools first for exact tool names and arguments. Local folder, capability, pause and system permissions are enforced by the computer. Requires online public sharing, or relay mode connected when no tunnel is usable. Calls are not retried; after a timeout, inspect activity before repeating writes. For long-running exec_command use a short yield_time_ms, then call write_stdin with the returned session_id.', inputSchema: { type: 'object', properties: { computer_id: idSchema, tool_name: { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_]{0,127}$' }, arguments: { type: 'object', additionalProperties: true, description: 'Arguments matching the tool schema returned by list_computer_tools' } }, required: ['computer_id', 'tool_name', 'arguments'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true } },
   { name: 'list_computers', description: 'List your ReadyRig computers, online status, permissions and available direct connection URLs.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'get_computer', description: 'Get current status and direct connection URLs for one computer.', inputSchema: { type: 'object', properties: { computer_id: idSchema }, required: ['computer_id'], additionalProperties: false } },
@@ -45,7 +45,26 @@ export async function cloudMCP(req: Request, env: Env): Promise<Response> {
   if (Object.keys(input).some(key => !Object.hasOwn(tool.inputSchema.properties, key))) return error(-32602, 'Unknown argument')
   if (params.name !== 'list_computers' && (typeof input.computer_id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(input.computer_id))) return error(-32602, 'Invalid computer_id')
   try {
-    if (params.name === 'list_computer_tools') return result(await computerTool(env, identity, input.computer_id as string, 'help', {}))
+    if (params.name === 'list_computer_tools') {
+      const { names, compact, category } = input
+      if ((names !== undefined && (!Array.isArray(names) || names.length > 40 || names.some(n => typeof n !== 'string'))) || (compact !== undefined && typeof compact !== 'boolean') || (category !== undefined && typeof category !== 'string')) return error(-32602, 'Invalid arguments')
+      // Compact by default: the full catalogue is tens of kilobytes and agents use a handful of tools.
+      const help: Record<string, unknown> = {}
+      if (Array.isArray(names) && names.length) help.names = names
+      else if (compact !== false) { help.compact = true; help.slim = true }
+      if (category) help.category = category
+      // Apps older than these options reject them as unknown arguments. help is read-only, so
+      // retry with what an older app understands: the plain compact list, then the full list.
+      const attempts: Record<string, unknown>[] = [help]
+      if (help.slim) attempts.push({ compact: true })
+      if (Object.keys(help).length) attempts.push({})
+      let listed!: Awaited<ReturnType<typeof computerTool>>
+      for (const attempt of attempts) {
+        listed = await computerTool(env, identity, input.computer_id as string, 'help', attempt)
+        if (!listed.isError || !/unknown argument/i.test(JSON.stringify(listed.content))) break
+      }
+      return result(listed)
+    }
     if (params.name === 'call_computer_tool') {
       if (typeof input.tool_name !== 'string' || !input.arguments || typeof input.arguments !== 'object' || Array.isArray(input.arguments)) return error(-32602, 'Provide tool_name and arguments object')
       return result(await computerTool(env, identity, input.computer_id as string, input.tool_name, input.arguments as Record<string, unknown>))

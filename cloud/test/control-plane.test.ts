@@ -601,6 +601,27 @@ test('cloud MCP relays enabled tools only to the current owned approved tunnel, 
     assert.equal(headers.has('Authorization'), false); assert.equal(headers.has('Cookie'), false)
     assert.ok(headers.get('X-Session-ID')!.startsWith('cloud-'))
     assert.equal(requests[0].init.redirect, 'manual')
+    assert.deepEqual(JSON.parse(String(requests[0].init.body)), { compact: true, slim: true })
+    await run('list_computer_tools', { names: ['read_file', 'glob'], category: 'files' })
+    assert.deepEqual(JSON.parse(String(requests.at(-1)!.init.body)), { names: ['read_file', 'glob'], category: 'files' })
+    await run('list_computer_tools', { compact: false })
+    assert.deepEqual(JSON.parse(String(requests.at(-1)!.init.body)), {})
+    const before = requests.length
+    for (const bad of [{ names: 'read_file' }, { names: [1] }, { compact: 'yes' }, { category: 5 }]) assert.equal((await run('list_computer_tools', bad)).result.error?.code, -32602)
+    assert.equal(requests.length, before)
+    // An app that predates names/compact/slim rejects them; the call degrades to what it supports.
+    const upToDate = globalThis.fetch
+    const bodies: Record<string, unknown>[] = []
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(String(init!.body)); bodies.push(body)
+      return body.slim || body.names ? Response.json({ error: 'unknown argument: ' + (body.slim ? 'slim' : 'names'), status: 'error' }, { status: 422 }) : Response.json({ call_id: 'old', result: { tools: [] }, status: 'success' })
+    }
+    assert.equal((await run('list_computer_tools', {})).result.result.isError, false)
+    assert.deepEqual(bodies, [{ compact: true, slim: true }, { compact: true }])
+    bodies.length = 0
+    assert.equal((await run('list_computer_tools', { names: ['read_file'] })).result.result.isError, false)
+    assert.deepEqual(bodies, [{ names: ['read_file'] }, {}])
+    globalThis.fetch = upToDate
     response = { call_id: 'screenshot', result: { screenshot: 'data:image/jpeg;base64,dGVzdA==', width: 10 }, status: 'ok' }
     const screenshot = (await run('call_computer_tool', { tool_name: 'computer_screenshot', arguments: {} })).result.result
     assert.equal(screenshot.content[0].type, 'image'); assert.equal(screenshot.content[0].data, 'dGVzdA==')
@@ -706,7 +727,7 @@ test('cloud MCP uses the relay when no tunnel is usable and says so when it cann
     await beat(device, relaySnapshot('connected') as any)
     const listed = (await run('list_computer_tools', {})).result.result
     assert.equal(listed.isError, false)
-    assert.deepEqual(relay.calls[0], { tool: 'help', args: {}, session: relay.calls[0].session, client: 'ReadyRig Cloud MCP' })
+    assert.deepEqual(relay.calls[0], { tool: 'help', args: { compact: true, slim: true }, session: relay.calls[0].session, client: 'ReadyRig Cloud MCP' })
     assert.ok(relay.calls[0].session.startsWith('cloud-'))
     assert.deepEqual(relay.names.at(-1), device.id)
     relay.reply = { http_status: 200, body: { call_id: 's', result: { screenshot: 'data:image/jpeg;base64,dGVzdA==' }, status: 'success' } }
