@@ -149,11 +149,11 @@ func (r *Registry) RegisterHelp() {
 				result.Tools = append(result.Tools, h)
 			}
 			result.Total = len(result.Tools)
-			if args.Compact && args.Slim && !selected {
-				result.Note = strings.TrimSpace(result.Note + " " + slimFlagsNote)
-			}
 			if hidden {
 				result.Note = "Tools in group advanced are not listed by tools/list; run them with use_tool {name, arguments}."
+			}
+			if args.Compact && args.Slim && !selected {
+				result.Note = strings.TrimSpace(result.Note + " " + slimFlagsNote)
 			}
 			return Output{Value: result}, nil
 		},

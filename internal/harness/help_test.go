@@ -210,3 +210,14 @@ func TestHelpSlimListing(t *testing.T) {
 		t.Fatal(string(fb))
 	}
 }
+
+// The slim note must survive alongside the advanced-group note, or agents lose the omission rule.
+func TestHelpSlimNoteWithAdvancedTools(t *testing.T) {
+	r := registryForTest(t)
+	r.RegisterHelp()
+	r.Register(Tool{Spec: Spec{Name: "deep", Category: "files", Group: "advanced", Description: "Deep.", InputSchema: Schema(map[string]any{})}, Run: func(context.Context, Invocation) (Output, error) { return Output{}, nil }})
+	got := helpResult(t, r, map[string]any{"compact": true, "slim": true})
+	if !strings.Contains(got.Note, "use_tool") || !strings.Contains(got.Note, "Slim listing") {
+		t.Fatal(got.Note)
+	}
+}
