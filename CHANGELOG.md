@@ -4,6 +4,8 @@ Notable changes to ReadyRig are recorded here. For setup and current behavior, s
 
 ## Unreleased
 
+## 0.6.18
+
 ### Added
 
 - Cloud relay, an opt-in backup for the Cloudflare tunnel. When the tunnel is down or unavailable, the app opens an outbound WebSocket to the cloud site, and the cloud MCP's `list_computer_tools` and `call_computer_tool` use it. The tunnel is still tried first; the relay is used when there is no usable tunnel link or the tunnel's edge returns 530 (the request never reached the computer).
