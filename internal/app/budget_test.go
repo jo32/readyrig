@@ -2,9 +2,9 @@ package app
 
 // Budget tests guard the size of what every session pays for before it does
 // any work: the tool definitions. They were measured and cut in 0.6.13 (see
-// CHANGELOG.md and scripts/bench-tools.py). A change that makes them larger
+// changelog/0.6.13.md and scripts/bench-tools.py). A change that makes them larger
 // should be deliberate: raise the budget in the same commit and say why in
-// CHANGELOG.md.
+// changelog/unreleased.md.
 
 import (
 	"computer-use-server/internal/harness"

@@ -15,7 +15,7 @@ Usage:
 
 The guard exists so that no later feature quietly makes agents pay more tokens,
 make more requests, or lose jobs that used to finish. If a change must raise a
-budget, rewrite the baseline in the same commit and explain why in CHANGELOG.md.
+budget, rewrite the baseline in the same commit and explain why in changelog/unreleased.md.
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, threading, time, urllib.request
 
@@ -242,7 +242,7 @@ def guard(a):
                 if r['seconds'] >= 20:
                     b['max_seconds'] = int(r['seconds']) + 20
             tasks[name] = b
-        json.dump({'_about': 'Budgets for scripts/bench-tools.py --check. Rewrite only on purpose, in the same commit as the change that needs it, and say why in CHANGELOG.md.', 'tasks': tasks}, open(BASELINE, 'w'), indent=1)
+        json.dump({'_about': 'Budgets for scripts/bench-tools.py --check. Rewrite only on purpose, in the same commit as the change that needs it, and say why in changelog/unreleased.md.', 'tasks': tasks}, open(BASELINE, 'w'), indent=1)
         print('wrote', BASELINE)
         return 0
     baseline = json.load(open(BASELINE))['tasks']

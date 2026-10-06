@@ -523,7 +523,7 @@ Checks that keep later changes from quietly costing agents more:
 - **Behaviour benchmark (`make bench-check`, also run by the release workflow).** `scripts/bench-tools.py --check` starts an isolated build and runs the tasks agents actually do: a survey of several files, a very large command output, small operations, waiting for one silent job, waiting for two jobs, and a 70-second command under the default timeout. It fails if a task needs more requests or bytes than `scripts/bench-baseline.json` allows, takes longer than its limit, or stops completing. `scripts/bench-tools.py OLD NEW` compares two builds side by side.
 - **Negative controls.** Each guard has a test that proves it fails when a budget is exceeded, so a guard that silently stops checking is caught.
 
-When a change must cost more (a new tool, a richer result), raise the budget in the same commit: change the constant, or rewrite the baseline with `scripts/bench-tools.py --write-baseline BINARY`, and give the reason in CHANGELOG.md. Run `make bench-check` before starting a feature to see the headroom.
+When a change must cost more (a new tool, a richer result), raise the budget in the same commit: change the constant, or rewrite the baseline with `scripts/bench-tools.py --write-baseline BINARY`, and give the reason in `changelog/unreleased.md`. Run `make bench-check` before starting a feature to see the headroom.
 
 ## Compatibility
 

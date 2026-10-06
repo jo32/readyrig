@@ -2,9 +2,10 @@ package server
 
 // Budget tests guard what every agent pays on every call: the size of results
 // and of the server's instructions. They exist because those costs grew
-// unnoticed once and were measured and cut in 0.6.13 (see CHANGELOG and
+// unnoticed once and were measured and cut in 0.6.13 (see changelog/0.6.13.md and
 // scripts/bench-tools.py). A change that makes any of them larger should be
-// deliberate: raise the budget in the same commit and say why in CHANGELOG.md.
+// deliberate: raise the budget in the same commit and say why in
+// changelog/unreleased.md.
 
 import (
 	"computer-use-server/internal/harness"
