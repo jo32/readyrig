@@ -406,6 +406,16 @@ Tool results are returned as MCP content blocks: images as image content, then t
 
 A client may also open `GET /mcp` with `Accept: text/event-stream` and its `Mcp-Session-Id`. That optional stream carries `notifications/tools/list_changed` when a capability is switched or Chrome tools appear or disappear, and `notifications/message` events with `kind: "task_finished"` for background jobs. It is not available through Quick Tunnels or other proxies that buffer SSE; the `notices` mechanism works everywhere. `notifications/progress` is not sent for the same reason; the pull-based progress described under Commands and background jobs replaces it. See [Security boundaries and limitations](#security-boundaries-and-limitations) for disconnect behavior.
 
+### Claude Code: pick a project with /rp
+
+[`integrations/claude-code/rp`](integrations/claude-code/rp) is a Claude Code mod for people who use ReadyRig through its MCP server. `/rp` opens a pane listing the approved projects on every computer, grouped by machine; the project you pick is added to your next prompt with its machine name, `computer_id` and path, so the agent works in the right place. Install it at the Claude Code prompt:
+
+```
+/plugin install rp --marketplace jo32/readyrig
+```
+
+`/rp clear` drops a pick you have not used. Requirements, local installs and development are in the mod's [README](integrations/claude-code/rp/README.md).
+
 ### Computer-use coordinates
 
 1. Call `computer_screenshot` in the same session.

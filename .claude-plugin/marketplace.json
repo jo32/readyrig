@@ -1,0 +1,14 @@
+{
+  "name": "readyrig",
+  "owner": {
+    "name": "jo32"
+  },
+  "description": "Claude Code mods for ReadyRig",
+  "plugins": [
+    {
+      "name": "rp",
+      "source": "./integrations/claude-code/rp",
+      "description": "/rp lists ReadyRig projects by machine; the picked project is appended to your next prompt"
+    }
+  ]
+}
