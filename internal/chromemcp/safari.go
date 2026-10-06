@@ -392,7 +392,7 @@ func (b *SafariBridge) callTool(ctx context.Context, upstream string, in harness
 		b.markWorking()
 		return out, nil
 	}
-	message := "the Safari tool reported an error; see the returned content"
+	message := "Safari: " + firstLine(resultText(result), "the tool reported an error")
 	if strings.Contains(resultText(result), "Allow remote automation") {
 		message += ". Turn on " + safariSetting + ", then try again"
 		b.mu.Lock()

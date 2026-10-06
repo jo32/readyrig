@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -205,8 +206,10 @@ type process struct {
 	command        string
 	activity       chan struct{}
 	code           int
-	timedOut       bool
-	cancelled      bool
+	// signal names what killed the process when code is -1.
+	signal    string
+	timedOut  bool
+	cancelled bool
 	// terminated is set when the agent asked write_stdin to kill the process:
 	// that is the outcome it requested, not a failure.
 	terminated atomic.Bool
@@ -247,7 +250,7 @@ func (p *Processes) Register(r *Registry) {
 	r.Register(Tool{Spec: Spec{Name: "exec_command", Category: "terminal", Description: "Run a shell command on the host (not sandboxed). A non-zero exit is data (exit_code), not an error. Output over 30 KiB is cut to its start and end and saved in full; read it with read_file at stdout_path. If still running after yield_time_ms you get a session_id for write_stdin. background=true returns at once for long jobs: later results carry [progress] lines and a [notice] when it ends. login_shell=true loads your shell profile (Homebrew, nvm). No PTY. Prefer the file tools over cat/sed/grep/find.", Mutating: true, Parallel: true, InputSchema: Schema(map[string]any{"command": Prop("string", "Shell command"), "project": projectProp, "cwd": Prop("string", "Project-relative or permitted absolute directory"), "timeout": limited("integer", "Seconds before the command is killed; default 600 (3600 with background), max 14400", 1, maxTimeout), "yield_time_ms": limited("integer", "How long to wait for output before returning a session_id, default 1000", 0, 10000), "background": Prop("boolean", "Return immediately and notify when the command finishes"), "login_shell": Prop("boolean", "Run through the user's login shell so profile PATH entries apply"), "env": Prop("object", "Additional environment variables")}, "command")}, Run: p.tagged(p.start)})
 	r.Register(Tool{Spec: Spec{Name: "list_tasks", Category: "terminal", Description: "List this session's command sessions: running ones and the 5 most recent finished (finished=N for more), with id, command, elapsed time, output size, idle time, exit code. wait=any|all blocks up to yield_time_ms until a running one (any) or all of them finish.", Parallel: true, InputSchema: Schema(map[string]any{"wait": enum("Block until one (any) or all running commands finish", "any", "all"), "yield_time_ms": limited("integer", "Longest wait, default 10000", 0, maxPollWait), "finished": limited("integer", "Finished sessions to show (default 5)", 0, 100)})}, Run: p.listTasks})
 	r.AddProgress(p.progress)
-	r.Register(Tool{Spec: Spec{Name: "write_stdin", Category: "terminal", Description: "Send input to, or poll, an exec_command session. An empty chars polls and returns unread output. yield_time_ms (max 45000) is the longest wait and the call returns early if the process exits, so use a long value to wait for completion (25000 works everywhere). A wait your client abandons does not stop the command. return_on=output also returns when new output arrives. terminate=true kills the process (a normal result with terminated:true); close_stdin sends EOF.", Mutating: true, Parallel: true, InputSchema: Schema(map[string]any{"session_id": Prop("string", "Process session_id from exec_command"), "chars": Prop("string", "Input bytes"), "yield_time_ms": limited("integer", "Longest wait for output, default 1000, max 20000", 0, maxPollWait), "return_on": enum("timeout (default) waits the full time unless the process exits; output returns as soon as new output arrives, a long poll for following logs", "timeout", "output"), "terminate": Prop("boolean", "Cancel process"), "close_stdin": Prop("boolean", "Close stdin")}, "session_id")}, Run: p.tagged(p.input)})
+	r.Register(Tool{Spec: Spec{Name: "write_stdin", Category: "terminal", Description: "Send input to, or poll, an exec_command session. An empty chars polls and returns unread output. yield_time_ms (max 45000) is the longest wait and the call returns early if the process exits, so use a long value to wait for completion (25000 works everywhere). A wait your client abandons does not stop the command. return_on=output also returns when new output arrives. terminate=true kills the process (a normal result with terminated:true); close_stdin sends EOF.", Mutating: true, Parallel: true, InputSchema: Schema(map[string]any{"session_id": Prop("string", "Process session_id from exec_command"), "chars": Prop("string", "Input bytes"), "yield_time_ms": limited("integer", "Longest wait for output, default 1000, max 45000", 0, maxPollWait), "return_on": enum("timeout (default) waits the full time unless the process exits; output returns as soon as new output arrives, a long poll for following logs", "timeout", "output"), "terminate": Prop("boolean", "Cancel process"), "close_stdin": Prop("boolean", "Close stdin")}, "session_id")}, Run: p.tagged(p.input)})
 }
 
 // commandEnv keeps secrets out of children but gives them a usable PATH: apps
@@ -335,7 +338,7 @@ func (p *Processes) start(ctx context.Context, in Invocation) (Output, error) {
 		}
 	}
 	if a.Timeout < 1 || a.Timeout > maxTimeout || a.Yield < 0 || a.Yield > 10000 {
-		return Output{}, errors.New("invalid timeout or yield_time_ms")
+		return Output{}, fmt.Errorf("timeout must be between 1 and %d s and yield_time_ms between 0 and 10000", maxTimeout)
 	}
 	if a.Cwd == "" {
 		a.Cwd = "."
@@ -438,6 +441,9 @@ func (p *Processes) start(ctx context.Context, in Invocation) (Output, error) {
 			var e *exec.ExitError
 			if errors.As(err, &e) {
 				pr.code = e.ExitCode()
+				if ws, ok := e.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+					pr.signal = ws.Signal().String()
+				}
 			}
 		}
 		pr.timedOut = errors.Is(processCtx.Err(), context.DeadlineExceeded)
@@ -472,7 +478,7 @@ func (p *Processes) start(ctx context.Context, in Invocation) (Output, error) {
 				return value, fmt.Errorf("command timed out after %d s", pr.timeout)
 			}
 			if pr.code != 0 {
-				return value, fmt.Errorf("command exited with code %d", pr.code)
+				return value, errors.New(pr.failure())
 			}
 			return value, nil
 		}
@@ -493,13 +499,13 @@ func (p *Processes) input(ctx context.Context, in Invocation) (Output, error) {
 		return Output{}, err
 	}
 	if a.Yield < 0 || a.Yield > maxPollWait {
-		return Output{}, errors.New("invalid yield_time_ms")
+		return Output{}, fmt.Errorf("yield_time_ms must be between 0 and %d", maxPollWait)
 	}
 	p.mu.Lock()
 	pr, ok := p.items[a.ID]
 	p.mu.Unlock()
 	if !ok || pr.session != in.Session {
-		return Output{}, &ToolError{"session_not_found", "process session not found"}
+		return Output{}, &ToolError{"session_not_found", fmt.Sprintf("no command session %q in this session; call list_tasks to see its sessions", a.ID)}
 	}
 	if a.Terminate {
 		// Mark the kill as requested before cancelling, unless the process has
@@ -611,6 +617,7 @@ func poll(ctx context.Context, pr *process, id string, yield int, onOutput, kill
 			value["terminated"] = true
 		} else {
 			value["exit_code"] = pr.code
+			addSignal(value, pr)
 		}
 		switch {
 		case pr.terminated.Load():
@@ -620,7 +627,7 @@ func poll(ctx context.Context, pr *process, id string, yield int, onOutput, kill
 		case pr.timedOut:
 			err = &ToolError{"timeout", fmt.Sprintf("command timed out after %d s", pr.timeout)}
 		case pr.code != 0:
-			out.Failure = fmt.Sprintf("command exited with code %d", pr.code)
+			out.Failure = pr.failure()
 		}
 	}
 	out.Text = processText(value)
@@ -697,6 +704,20 @@ func processText(v map[string]any) string {
 }
 
 // Snapshot never drains the stream consumed by a remote agent's write_stdin calls.
+// failure describes a non-zero exit, naming the signal when there was one.
+func (pr *process) failure() string {
+	if pr.signal != "" {
+		return fmt.Sprintf("command was killed by signal: %s", pr.signal)
+	}
+	return fmt.Sprintf("command exited with code %d", pr.code)
+}
+
+func addSignal(value map[string]any, pr *process) {
+	if pr.signal != "" {
+		value["signal"] = pr.signal
+	}
+}
+
 func processSnapshot(pr *process, id string) map[string]any {
 	stdout, a := pr.stdout.Snapshot()
 	stderr, b := pr.stderr.Snapshot()
@@ -710,6 +731,7 @@ func processSnapshot(pr *process, id string) map[string]any {
 			value["terminated"] = true
 		} else {
 			value["exit_code"] = pr.code
+			addSignal(value, pr)
 			value["cancelled"] = pr.cancelled
 		}
 	default:
@@ -758,6 +780,7 @@ func taskInfo(id string, pr *process) map[string]any {
 			v["terminated"] = true
 		} else {
 			v["exit_code"] = pr.code
+			addSignal(v, pr)
 			v["cancelled"] = pr.cancelled
 		}
 		v["ended_ago_ms"] = time.Since(pr.ended).Milliseconds()

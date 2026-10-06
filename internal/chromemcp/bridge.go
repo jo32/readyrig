@@ -229,6 +229,20 @@ func (b *Bridge) reconcile(ctx context.Context) {
 	b.retryAfter = time.Now().Add(30 * time.Second)
 }
 
+// firstLine keeps an upstream error readable in the activity log: the first
+// non-empty line, without a leading "Error: ", at most 300 bytes.
+func firstLine(text, fallback string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "Error:")); line != "" {
+			if len(line) > 300 {
+				line = strings.ToValidUTF8(line[:300], "") + "…"
+			}
+			return line
+		}
+	}
+	return fallback
+}
+
 // pathHint explains the one refusal that is about ReadyRig's setup, not the page.
 func pathHint(result map[string]any) string {
 	content, _ := result["content"].([]any)
@@ -318,7 +332,7 @@ func (b *Bridge) loadTools(ctx context.Context, c *client) ([]harness.Tool, erro
 				}
 				out := harness.Output{Value: result, MCPResult: result}
 				if failed, _ := result["isError"].(bool); failed {
-					return out, &harness.ToolError{Code: "browser_tool_failed", Message: "the Chrome DevTools tool reported an error; see the returned content" + pathHint(result)}
+					return out, &harness.ToolError{Code: "browser_tool_failed", Message: "Chrome DevTools: " + firstLine(resultText(result), "the tool reported an error") + pathHint(result)}
 				}
 				return out, nil
 			}})

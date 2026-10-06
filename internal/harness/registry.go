@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +88,45 @@ func ErrorCode(err error) string {
 		return "file_exists"
 	}
 	return "tool_error"
+}
+
+// describedError rewords a low-level error for the agent and the activity log
+// while errors.Is/As (and so ErrorCode) still see the original.
+type describedError struct {
+	msg string
+	err error
+}
+
+func (e *describedError) Error() string { return e.msg }
+func (e *describedError) Unwrap() error { return e.err }
+
+// describe replaces Go's raw "context canceled" and "openat x: ..." texts.
+// clientGone reports whether the caller's own context ended.
+func describe(err error, clientGone bool, elapsed time.Duration) error {
+	var te *ToolError
+	// Only a bare path error: a wrapped one already carries its own context.
+	pe, isPath := err.(*fs.PathError)
+	switch {
+	case err == nil, errors.As(err, &te):
+		return err
+	case errors.Is(err, context.Canceled):
+		reason := "stopped from ReadyRig (cancel request, pause or capability turned off)"
+		if clientGone {
+			reason = "the client disconnected or abandoned the call"
+		}
+		return &describedError{fmt.Sprintf("cancelled after %s: %s", humanDuration(elapsed.Milliseconds()), reason), err}
+	case isPath:
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return &describedError{"no such file or directory: " + pe.Path, err}
+		case errors.Is(err, fs.ErrPermission):
+			return &describedError{"permission denied: " + pe.Path, err}
+		case errors.Is(err, fs.ErrExist):
+			return &describedError{"already exists: " + pe.Path, err}
+		}
+		return &describedError{fmt.Sprintf("%s: %v", pe.Path, pe.Err), err}
+	}
+	return err
 }
 
 // Event is a server-initiated notification for one agent session.
@@ -592,6 +632,7 @@ func (r *Registry) Invoke(ctx context.Context, name string, in Invocation) (out 
 		return out, call, fmt.Errorf("audit log unavailable: %w", err)
 	}
 	r.Signal()
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer func() {
@@ -599,6 +640,7 @@ func (r *Registry) Invoke(ctx context.Context, name string, in Invocation) (out 
 			err = fmt.Errorf("tool panic: %v", p)
 		}
 		call.Duration = time.Since(call.Started).Milliseconds()
+		err = describe(err, parent.Err() != nil, time.Since(call.Started))
 		if err != nil {
 			if call.Status != "denied" {
 				call.Status = "error"
@@ -745,6 +787,7 @@ func (r *Registry) follow(saved store.Call, out Output) {
 			saved.Duration = time.Since(saved.Started).Milliseconds()
 			saved.Status = "success"
 			if res.err != nil {
+				res.err = describe(res.err, false, time.Since(saved.Started))
 				saved.Status = "error"
 				saved.Error = r.redactText(res.err.Error())
 				if errors.Is(res.err, context.Canceled) {
@@ -871,17 +914,26 @@ func validate(raw []byte, schema map[string]any) error {
 	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
 		return errors.New("arguments must be a JSON object")
 	}
+	props := schema["properties"].(map[string]any)
+	// Unknown names come first: a misspelt required argument (cmd for command)
+	// is the real mistake, not the missing one.
+	var unknown []string
+	for key := range value {
+		if _, ok := props[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return unknownArgument(unknown[0], props)
+	}
 	for _, key := range schema["required"].([]string) {
 		if _, ok := value[key]; !ok {
 			return fmt.Errorf("missing argument: %s", key)
 		}
 	}
-	props := schema["properties"].(map[string]any)
 	for key, v := range value {
-		p, ok := props[key]
-		if !ok {
-			return fmt.Errorf("unknown argument: %s", key)
-		}
+		p := props[key]
 		kind := p.(map[string]any)["type"]
 		valid := false
 		switch kind {
@@ -905,6 +957,62 @@ func validate(raw []byte, schema map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// unknownArgument names the closest valid argument, or lists them all.
+func unknownArgument(key string, props map[string]any) error {
+	names := make([]string, 0, len(props))
+	best, bestScore := "", 3
+	for name := range props {
+		names = append(names, name)
+		score := editDistance(strings.ToLower(key), strings.ToLower(name))
+		if isAbbreviation(strings.ToLower(key), strings.ToLower(name)) {
+			score = 1
+		}
+		if score < bestScore || score == bestScore && name < best {
+			best, bestScore = name, score
+		}
+	}
+	if best != "" {
+		return fmt.Errorf("unknown argument: %s (did you mean %s?)", key, best)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("unknown argument: %s (valid: %s)", key, strings.Join(names, ", "))
+}
+
+// isAbbreviation reports whether short keeps name's first letter and the rest
+// of its letters in order, as cmd does for command.
+func isAbbreviation(short, name string) bool {
+	if len(short) < 2 || len(short) >= len(name) || short[0] != name[0] {
+		return false
+	}
+	i := 0
+	for j := 0; j < len(name) && i < len(short); j++ {
+		if name[j] == short[i] {
+			i++
+		}
+	}
+	return i == len(short)
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 // checkConstraints enforces the schema keywords the tools declare: enum,
