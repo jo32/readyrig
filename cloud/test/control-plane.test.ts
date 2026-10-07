@@ -637,6 +637,26 @@ test('cloud MCP relays enabled tools only to the current owned approved tunnel, 
     const screenshot = (await run('call_computer_tool', { tool_name: 'computer_screenshot', arguments: {} })).result.result
     assert.equal(screenshot.content[0].type, 'image'); assert.equal(screenshot.content[0].data, 'dGVzdA==')
     assert.equal(JSON.parse(screenshot.content[1].text).result.screenshot, undefined)
+    // read_file images arrive as MCP image blocks, in order, and leave the JSON text.
+    response = { call_id: 'read', result: { resolved_path: '/p/a.png', size: 4, mime: 'image/png', image: true }, images: [{ mimeType: 'image/png', data: 'cG5n' }, { mimeType: 'image/webp', data: 'd2VicA==' }], status: 'success', error: '' }
+    const read = (await run('call_computer_tool', { tool_name: 'read_file', arguments: { path: 'a.png' } })).result.result
+    assert.equal(read.isError, false)
+    assert.deepEqual(read.content.slice(0, 2), [{ type: 'image', mimeType: 'image/png', data: 'cG5n' }, { type: 'image', mimeType: 'image/webp', data: 'd2VicA==' }])
+    assert.equal(read.content.length, 3)
+    const readText = JSON.parse(read.content[2].text)
+    assert.equal(readText.images, undefined); assert.equal(readText.result.resolved_path, '/p/a.png'); assert.ok(!read.content[2].text.includes('cG5n'))
+    // Malformed or unsupported entries are not turned into images and stay visible in the text.
+    response = { call_id: 'odd', result: {}, images: [{ mimeType: 'image/jpeg', data: 'anBn' }, { mimeType: 'image/svg+xml', data: 'c3Zn' }, { mimeType: 'image/png', data: 5 }, { mimeType: 'image/png', data: '' }, 'x', null], status: 'success' }
+    const odd = (await run('call_computer_tool', { tool_name: 'read_file', arguments: { path: 'b' } })).result.result
+    assert.deepEqual(odd.content.filter((c: any) => c.type === 'image'), [{ type: 'image', mimeType: 'image/jpeg', data: 'anBn' }])
+    assert.deepEqual(JSON.parse(odd.content.at(-1).text).images, [{ mimeType: 'image/svg+xml', data: 'c3Zn' }, { mimeType: 'image/png', data: 5 }, { mimeType: 'image/png', data: '' }, 'x', null])
+    // A result with both kinds keeps every image; one with no images is unchanged text.
+    response = { call_id: 'both', result: { screenshot: 'data:image/jpeg;base64,c2hvdA==' }, images: [{ mimeType: 'image/gif', data: 'Z2lm' }], status: 'success' }
+    const both = (await run('call_computer_tool', { tool_name: 'read_file', arguments: { path: 'c.gif' } })).result.result
+    assert.deepEqual(both.content.map((c: any) => c.type + ':' + (c.data || '')), ['image:Z2lm', 'image:c2hvdA==', 'text:'])
+    response = { call_id: 'text', result: { content: '     1\thello' }, status: 'success' }
+    const text = (await run('call_computer_tool', { tool_name: 'read_file', arguments: { path: 'a.txt' } })).result.result
+    assert.equal(text.content.length, 1); assert.equal(JSON.parse(text.content[0].text).result.content, '     1\thello')
     response = { result: { content: [{ type: 'image', mimeType: 'image/png', data: 'dGVzdA==' }], structuredContent: { node: 12 } }, status: 'ok' }
     const chrome = (await run('call_computer_tool', { tool_name: 'chrome_take_screenshot', arguments: {} })).result.result
     assert.equal(chrome.content[0].mimeType, 'image/png'); assert.equal(chrome.structuredContent.node, 12)
@@ -745,6 +765,13 @@ test('cloud MCP uses the relay when no tunnel is usable and says so when it cann
     const shot = (await run('call_computer_tool', { tool_name: 'computer_screenshot', arguments: { frame: 1 } })).result.result
     assert.equal(shot.content[0].type, 'image'); assert.equal(shot.content[0].data, 'dGVzdA==')
     assert.deepEqual(relay.calls.at(-1).args, { frame: 1 })
+    relay.reply = { http_status: 200, body: { call_id: 'r', result: { resolved_path: '/p/a.png', image: true }, images: [{ mimeType: 'image/png', data: 'cG5n' }], status: 'success' } }
+    const read = (await run('call_computer_tool', { tool_name: 'read_file', arguments: { path: 'a.png' } })).result.result
+    assert.deepEqual(read.content[0], { type: 'image', mimeType: 'image/png', data: 'cG5n' }); assert.equal(JSON.parse(read.content[1].text).images, undefined)
+    // A failed call with images still reports the error and the image.
+    relay.reply = { http_status: 422, body: { call_id: 'e', result: null, images: [{ mimeType: 'image/png', data: 'cG5n' }], error: 'partial', status: 'error' } }
+    const partial = (await run('call_computer_tool', { tool_name: 'read_file', arguments: { path: 'a.png' } })).result.result
+    assert.equal(partial.isError, true); assert.equal(partial.content[0].type, 'image'); assert.equal(JSON.parse(partial.content[1].text).error, 'partial')
     relay.reply = { http_status: 423, body: { error: 'Capability disabled', status: 'denied' } }
     assert.equal((await run('call_computer_tool', { tool_name: 'exec_command', arguments: { command: 'pwd' } })).result.result.isError, true)
     const before = relay.calls.length

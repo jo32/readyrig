@@ -1,1 +1,5 @@
 # Unreleased
+
+## Fixed
+
+- Images from `read_file` now reach agents that use the cloud MCP (`call_computer_tool`) as real image content, over both the tunnel and the relay. The cloud passed only screenshots through as images and returned other images as base64 inside the JSON text, so agents could not see them and fell back to opening the file and taking a screenshot. Cloud-only change; no app update needed.

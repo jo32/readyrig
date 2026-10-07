@@ -6,6 +6,7 @@ import { relayCall } from './relay.ts'
 type Identity = { user_id: string; grant_id?: string }
 type ToolResult = { content: Record<string, unknown>[]; isError: boolean; structuredContent?: unknown }
 const maxResponseBytes = 8 * 1024 * 1024
+const imageTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 
 // Only use the freshly authenticated owner's heartbeat URL. Arbitrary tool
 // arguments can never select a URL, header, redirect or management endpoint.
@@ -81,6 +82,17 @@ export async function computerTool(env: Env, identity: Identity, deviceID: strin
     return { content: value.content, ...(value.structuredContent !== undefined ? { structuredContent: value.structuredContent } : {}), isError: failed || value.isError === true }
   }
   const content: Record<string, unknown>[] = []
+  // read_file returns images beside the result. Send them as MCP image blocks, not as
+  // base64 inside the JSON text; anything that is not a well-formed image stays there.
+  if (Array.isArray(output.images)) {
+    const rest = output.images.filter(image => {
+      if (!object(image) || typeof image.mimeType !== 'string' || !imageTypes.has(image.mimeType) || typeof image.data !== 'string' || !image.data) return true
+      content.push({ type: 'image', mimeType: image.mimeType, data: image.data })
+      return false
+    })
+    if (rest.length) output.images = rest
+    else delete output.images
+  }
   if (object(value) && typeof value.screenshot === 'string' && value.screenshot.startsWith('data:image/jpeg;base64,')) {
     content.push({ type: 'image', mimeType: 'image/jpeg', data: value.screenshot.slice('data:image/jpeg;base64,'.length) })
     delete value.screenshot
