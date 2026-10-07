@@ -139,3 +139,75 @@ func TestRevokedCredentialsStopHeartbeatAndDisconnectLocally(t *testing.T) {
 		t.Fatal("credential retained", err)
 	}
 }
+func TestRenameUpdatesCloudAndSavedCredentials(t *testing.T) {
+	var got string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/rename" || r.Header.Get("Authorization") != "Bearer secret" {
+			w.WriteHeader(404)
+			return
+		}
+		var in struct{ Name string }
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		got = in.Name
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer api.Close()
+	dir := t.TempDir()
+	_ = save(dir, "cloud.json", credentials{URL: api.URL, Token: "secret", DeviceID: "device", Name: "old"})
+	c := New(Options{Dir: dir})
+	if _, err := c.Rename("   "); err == nil {
+		t.Fatal("accepted blank name")
+	}
+	status, err := c.Rename(" Studio Mac ")
+	if err != nil || status.Name != "Studio Mac" || got != "Studio Mac" {
+		t.Fatal(status, err, got)
+	}
+	if New(Options{Dir: dir}).Status().Name != "Studio Mac" {
+		t.Fatal("rename not saved")
+	}
+	_ = save(dir, "cloud.json", credentials{URL: api.URL + "/missing", Token: "secret", DeviceID: "device", Name: "old"})
+	if _, err := New(Options{Dir: dir}).Rename("new"); err == nil || !strings.Contains(err.Error(), "网页控制台") {
+		t.Fatal("old cloud error", err)
+	}
+}
+func TestNameSyncsBothWays(t *testing.T) {
+	var cloudName atomic.Value
+	cloudName.Store("old")
+	var online atomic.Bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !online.Load() {
+			panic(http.ErrAbortHandler) // drop the connection like an unreachable cloud
+		}
+		var in struct{ Name string }
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Name != "" {
+			cloudName.Store(in.Name)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": cloudName.Load()})
+	}))
+	defer api.Close()
+	dir := t.TempDir()
+	_ = save(dir, "cloud.json", credentials{URL: api.URL, Token: "secret", DeviceID: "device", Name: "old"})
+	c := New(Options{Dir: dir})
+	status, err := c.Rename("offline name")
+	if err != nil || !status.NamePending || status.Name != "offline name" {
+		t.Fatal("offline rename", status, err)
+	}
+	if !New(Options{Dir: dir}).Status().NamePending {
+		t.Fatal("pending rename not saved")
+	}
+	online.Store(true)
+	if err := c.heartbeat(context.Background(), c.creds); err != nil {
+		t.Fatal(err)
+	}
+	if cloudName.Load() != "offline name" || c.Status().NamePending {
+		t.Fatal("pending rename not delivered", cloudName.Load(), c.Status())
+	}
+	cloudName.Store("from web")
+	if err := c.heartbeat(context.Background(), c.creds); err != nil {
+		t.Fatal(err)
+	}
+	if c.Status().Name != "from web" || New(Options{Dir: dir}).Status().Name != "from web" {
+		t.Fatal("web rename not applied and saved", c.Status())
+	}
+}

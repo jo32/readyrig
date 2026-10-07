@@ -170,6 +170,24 @@ func (s *Server) cloudRoutes(mux *http.ServeMux) {
 		}
 		write(w, s.cloudStatus())
 	})
+	mux.HandleFunc("POST /api/cloud/rename", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Name string `json:"name"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if s.Cloud == nil {
+			problem(w, 409, errors.New("云端连接尚未初始化"))
+			return
+		}
+		status, err := s.Cloud.Rename(in.Name)
+		if err != nil {
+			problem(w, 400, err)
+			return
+		}
+		write(w, status)
+	})
 	mux.HandleFunc("POST /api/cloud/disconnect", func(w http.ResponseWriter, r *http.Request) {
 		if s.Cloud != nil {
 			if err := s.Cloud.Disconnect(); err != nil {

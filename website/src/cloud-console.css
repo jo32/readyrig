@@ -397,10 +397,36 @@
   min-height: 34px;
   padding: 4px;
 }
+.cloud-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.cloud-name-edit {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.cloud-name-edit:hover {
+  background: var(--card-2);
+  color: var(--fg);
+}
+.cloud-name-edit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .cloud-rename {
   display: flex;
   gap: 8px;
-  margin: 16px 20px;
+  max-width: 520px;
 }
 .cloud-rename input {
   flex: 1;
@@ -684,7 +710,7 @@
     padding: 12px 16px;
   }
   .cloud-rename {
-    margin: 14px 16px;
+    flex-wrap: wrap;
   }
   .cloud-empty,
   .cloud-pair {

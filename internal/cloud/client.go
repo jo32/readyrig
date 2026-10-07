@@ -43,6 +43,8 @@ type Status struct {
 	LoginURL      string      `json:"login_url,omitempty"`
 	Code          string      `json:"code,omitempty"`
 	Relay         RelayStatus `json:"relay"`
+	// NamePending means a local rename is saved but has not reached the cloud yet.
+	NamePending bool `json:"name_pending,omitempty"`
 }
 type credentials struct {
 	URL      string `json:"url"`
@@ -50,6 +52,9 @@ type credentials struct {
 	Token    string `json:"token"`
 	Name     string `json:"name"`
 	Email    string `json:"email"`
+	// PendingName is a rename made while the cloud was unreachable; heartbeats
+	// deliver it once the computer is back online.
+	PendingName string `json:"pending_name,omitempty"`
 }
 type Options struct {
 	Dir           string
@@ -80,6 +85,7 @@ type Client struct {
 	relay       RelayStatus
 	relayCancel context.CancelFunc
 	relayWake   chan struct{}
+	nameRev     int // bumped by Rename so an in-flight heartbeat cannot restore the old name
 }
 
 func New(opts Options) *Client {
@@ -106,7 +112,7 @@ func New(opts Options) *Client {
 			c.creds.URL = opts.URL
 		}
 	}
-	c.status = Status{URL: c.creds.URL, Name: c.creds.Name, State: "signed_out", Message: "登录 Google，将这台电脑连接到网页"}
+	c.status = Status{URL: c.creds.URL, Name: c.creds.Name, State: "signed_out", Message: "登录 Google，将这台电脑连接到网页", NamePending: c.creds.PendingName != ""}
 	c.loadRelay()
 	if c.creds.Token == "" {
 		// Relay consent belongs to a bound account; never carry it over without one.
@@ -277,6 +283,53 @@ func (c *Client) pair(ctx context.Context, done chan struct{}, creds credentials
 		}
 	}
 }
+
+// Rename changes this computer's name in the cloud console. Before sign-in the
+// name is only kept locally and sent with the next login. When the cloud cannot
+// be reached the rename is saved and delivered by the next heartbeat.
+func (c *Client) Rename(name string) (Status, error) {
+	c.lifecycle.Lock()
+	defer c.lifecycle.Unlock()
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 128 {
+		return c.Status(), errors.New("电脑名称需为 1–128 字节")
+	}
+	c.mu.Lock()
+	creds, pairing := c.creds, c.status.State == "signing_in"
+	c.mu.Unlock()
+	if pairing {
+		return c.Status(), errors.New("请先断开当前账号，或等待登录完成")
+	}
+	if creds.Token != "" && creds.DeviceID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		err := c.request(ctx, creds.URL, "/api/agent/rename", creds.Token, map[string]string{"name": name}, nil)
+		cancel()
+		pending := ""
+		if errors.Is(err, errOffline) {
+			err, pending = nil, name
+		}
+		if err != nil && strings.Contains(err.Error(), "（404）") {
+			err = errors.New("云端服务暂不支持在本机改名，请在网页控制台修改")
+		}
+		if err != nil {
+			return c.Status(), err
+		}
+		creds.Name, creds.PendingName = name, pending
+		if err := save(c.opts.Dir, "cloud.json", creds); err != nil {
+			return c.Status(), err
+		}
+	}
+	c.mu.Lock()
+	c.creds.Name, c.status.Name = name, name
+	if c.creds.Token != "" {
+		c.creds.PendingName = creds.PendingName
+	}
+	c.status.NamePending = c.creds.PendingName != ""
+	c.nameRev++
+	c.mu.Unlock()
+	c.changed()
+	return c.Status(), nil
+}
 func (c *Client) Disconnect() error {
 	c.lifecycle.Lock()
 	defer c.lifecycle.Unlock()
@@ -299,7 +352,7 @@ func (c *Client) Disconnect() error {
 		}
 	}
 	c.mu.Lock()
-	c.creds.Token, c.creds.DeviceID, c.creds.Email = "", "", ""
+	c.creds.Token, c.creds.DeviceID, c.creds.Email, c.creds.PendingName = "", "", "", ""
 	c.results = nil
 	c.relay = RelayStatus{State: relayStateOff}
 	c.status = Status{URL: c.creds.URL, Name: c.creds.Name, State: "signed_out", Message: "已断开云端账号", Relay: c.relay}
@@ -349,6 +402,7 @@ func (c *Client) runLoop(ctx context.Context, creds credentials) {
 func (c *Client) heartbeat(ctx context.Context, creds credentials) error {
 	c.mu.Lock()
 	pending := append([]Result(nil), c.results...)
+	pendingName, nameRev := c.creds.PendingName, c.nameRev
 	c.mu.Unlock()
 	var reply struct {
 		Command *Command `json:"command"`
@@ -358,7 +412,11 @@ func (c *Client) heartbeat(ctx context.Context, creds credentials) error {
 	if c.opts.Snapshot != nil {
 		snapshot = c.opts.Snapshot()
 	}
-	if err := c.request(ctx, creds.URL, "/api/agent/heartbeat", creds.Token, map[string]any{"snapshot": snapshot, "results": pending}, &reply); err != nil {
+	input := map[string]any{"snapshot": snapshot, "results": pending}
+	if pendingName != "" {
+		input["name"] = pendingName
+	}
+	if err := c.request(ctx, creds.URL, "/api/agent/heartbeat", creds.Token, input, &reply); err != nil {
 		return err
 	}
 	// Remove acknowledged results only after the server response. A lost response
@@ -366,10 +424,23 @@ func (c *Client) heartbeat(ctx context.Context, creds credentials) error {
 	c.mu.Lock()
 	c.results = nil
 	c.status.LastHeartbeat = time.Now()
-	if reply.Name != "" {
-		c.status.Name = reply.Name
+	// The cloud owns the name, so renames from the web console land here. Skip the
+	// reply when a local rename happened meanwhile, and keep a pending rename until
+	// the cloud confirms it.
+	var renamed *credentials
+	if reply.Name != "" && c.nameRev == nameRev && (pendingName == "" || reply.Name == pendingName) && (reply.Name != c.creds.Name || c.creds.PendingName != "") {
+		c.creds.Name, c.creds.PendingName = reply.Name, ""
+		c.status.Name, c.status.NamePending = reply.Name, false
+		saved := c.creds
+		renamed = &saved
 	}
 	c.mu.Unlock()
+	if renamed != nil {
+		// Persist so a restart shows the current name before the first heartbeat.
+		if err := save(c.opts.Dir, "cloud.json", *renamed); err != nil {
+			return err
+		}
+	}
 	if err := save(c.opts.Dir, "cloud-results.json", []Result{}); err != nil {
 		return err
 	}
@@ -400,7 +471,10 @@ func (c *Client) heartbeat(ctx context.Context, creds credentials) error {
 	return nil
 }
 
-var errUnauthorized = errors.New("设备凭证已失效")
+var (
+	errUnauthorized = errors.New("设备凭证已失效")
+	errOffline      = errors.New("无法连接云端服务")
+)
 
 func (c *Client) request(ctx context.Context, base, path, token string, input, output any) error {
 	data, err := json.Marshal(input)
@@ -417,7 +491,7 @@ func (c *Client) request(ctx context.Context, base, path, token string, input, o
 	}
 	resp, err := c.opts.Client.Do(req)
 	if err != nil {
-		return errors.New("无法连接云端服务")
+		return errOffline
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 401 {

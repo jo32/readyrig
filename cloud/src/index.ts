@@ -141,19 +141,25 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (path === '/api/agent/disconnect') {
       await revoke(env, device.id); return json({ ok: true })
     }
+    if (path === '/api/agent/rename') {
+      const name = text(input.name)
+      await env.DB.prepare('UPDATE devices SET name=? WHERE id=? AND revoked_at IS NULL').bind(name, device.id).run(); return json({ name })
+    }
     if (path === '/api/agent/heartbeat') {
       const snapshot = sanitizeSnapshot(input.snapshot), results = input.results || []
+      // A rename made in the app while offline arrives with the next heartbeat.
+      const name = input.name === undefined ? device.name : text(input.name)
       if (!Array.isArray(results) || results.length > 8) throw new HTTPError(400, '无效的命令回执')
       const updates = results.map((r: any) => {
         if (!r || typeof r.id !== 'string' || (r.error !== undefined && typeof r.error !== 'string')) throw new HTTPError(400, '无效的命令回执')
         return env.DB.prepare("UPDATE commands SET status=?,completed_at=?,error=? WHERE id=? AND device_id=? AND status IN ('executing','expired')").bind(r.error ? 'failed' : 'completed', now(), r.error ? r.error.slice(0, 1024) : null, r.id, device.id)
       })
-      await env.DB.batch([env.DB.prepare('UPDATE devices SET last_seen=?,snapshot=? WHERE id=? AND revoked_at IS NULL').bind(now(), JSON.stringify(snapshot), device.id), ...updates])
+      await env.DB.batch([env.DB.prepare('UPDATE devices SET last_seen=?,snapshot=?,name=? WHERE id=? AND revoked_at IS NULL').bind(now(), JSON.stringify(snapshot), name, device.id), ...updates])
       await expireCommands(env, device.id)
       // Atomic claim prevents two overlapping heartbeats from receiving the same
       // command. Timed-out execution is never retried automatically.
       const command = await env.DB.prepare("UPDATE commands SET status='executing',delivered_at=? WHERE id=(SELECT id FROM commands WHERE device_id=? AND status='queued' AND expires_at>? ORDER BY rowid LIMIT 1) AND status='queued' AND EXISTS(SELECT 1 FROM devices WHERE id=? AND revoked_at IS NULL) AND NOT EXISTS(SELECT 1 FROM commands WHERE device_id=? AND status='executing') RETURNING id,kind,payload").bind(now(), device.id, now(), device.id, device.id).first<{ id: string; kind: string; payload: string }>()
-      return json({ name: device.name, command: command ? { ...command, payload: JSON.parse(command.payload) } : null })
+      return json({ name, command: command ? { ...command, payload: JSON.parse(command.payload) } : null })
     }
     throw new HTTPError(404, '找不到接口')
   }

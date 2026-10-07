@@ -122,6 +122,18 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
       clearInterval(timer)
     }
   }, [load])
+  const rename = () => {
+    const next = name.trim()
+    if (next === device.name) return setEditing(false)
+    setBusy(true)
+    void api(`/api/devices/${device.id}`, 'PATCH', { name: next })
+      .then(async () => {
+        setEditing(false)
+        await refresh()
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setBusy(false))
+  }
   const send = async (kind: string, payload: Record<string, unknown>) => {
     setBusy(true)
     setError('')
@@ -181,7 +193,49 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
           <Icon name="monitor" width="22" height="22" />
         </span>
         <div className="cloud-device-name">
-          <h2 title={device.name}>{device.name}</h2>
+          {editing ? (
+            <form className="cloud-rename" onSubmit={(e) => {
+              e.preventDefault()
+              rename()
+            }}>
+              <input
+                aria-label={t('电脑名称')}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setEditing(false)
+                }}
+                maxLength={128}
+                required
+                autoFocus
+                onFocus={(e) => e.target.select()}
+              />
+              <button className="button button-secondary" disabled={busy}>
+                {t('保存名称')}
+              </button>
+              <button type="button" className="button button-secondary" disabled={busy} onClick={() => setEditing(false)}>
+                {t('取消')}
+              </button>
+            </form>
+          ) : (
+            <div className="cloud-name-row">
+              <h2 title={device.name}>{device.name}</h2>
+              <button
+                type="button"
+                className="cloud-name-edit"
+                title={t('重命名')}
+                aria-label={t('重命名')}
+                disabled={busy}
+                onClick={() => {
+                  setName(device.name)
+                  setError('')
+                  setEditing(true)
+                }}
+              >
+                <Icon name="pencil" width="15" height="15" />
+              </button>
+            </div>
+          )}
           <p>
             {platformNames[device.platform] || device.platform} · ReadyRig {snapshot.version || '—'}
           </p>
@@ -365,16 +419,6 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
           {t(snapshot.paused ? '恢复控制' : '暂停控制')}
         </button>
         <button
-          className="button button-secondary"
-          disabled={busy}
-          onClick={() => {
-            setName(device.name)
-            setEditing(!editing)
-          }}
-        >
-          {t('重命名')}
-        </button>
-        <button
           className="cloud-danger"
           disabled={busy}
           onClick={() => {
@@ -389,33 +433,6 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
           {t('解绑电脑')}
         </button>
       </div>
-      {editing && (
-        <form
-          className="cloud-rename"
-          onSubmit={(e) => {
-            e.preventDefault()
-            setBusy(true)
-            void api(`/api/devices/${device.id}`, 'PATCH', { name })
-              .then(async () => {
-                setEditing(false)
-                await refresh()
-              })
-              .catch((e) => setError(e.message))
-              .finally(() => setBusy(false))
-          }}
-        >
-          <input
-            aria-label={t('电脑名称')}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            maxLength={128}
-            required
-          />
-          <button className="button button-secondary" disabled={busy}>
-            {t('保存名称')}
-          </button>
-        </form>
-      )}
       {!device.online && (
         <p className="cloud-note">{t('电脑离线，请确认 ReadyRig 正在运行且电脑没有休眠。恢复心跳后可下发命令。')}</p>
       )}

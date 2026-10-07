@@ -98,6 +98,17 @@ test('heartbeats update presence, strip local secrets, and deliver commands in o
   db.prepare('UPDATE devices SET last_seen=? WHERE id=?').run(timestamp() - 61, device.id)
   assert.equal((await call('/api/devices', 'GET', undefined, owner())).result.devices[0].online, false)
 })
+test('a linked computer can rename itself and heartbeats report the new name', async () => {
+  const device = await register()
+  assert.equal((await call('/api/agent/rename', 'POST', { name: '  Studio Mac ' }, device.headers)).result.name, 'Studio Mac')
+  assert.equal((await call('/api/agent/heartbeat', 'POST', { snapshot }, device.headers)).result.name, 'Studio Mac')
+  assert.equal((await call('/api/agent/rename', 'POST', { name: ' ' }, device.headers)).response.status, 400)
+  assert.equal((await call('/api/agent/rename', 'POST', { name: 'x' })).response.status, 401)
+  assert.equal((await call('/api/agent/heartbeat', 'POST', { snapshot, name: 'Offline rename' }, device.headers)).result.name, 'Offline rename')
+  assert.equal((await call('/api/devices', 'GET', undefined, owner())).result.devices[0].name, 'Offline rename')
+  await call('/api/devices/' + device.id, 'PATCH', { name: 'From web' }, owner())
+  assert.equal((await call('/api/agent/heartbeat', 'POST', { snapshot }, device.headers)).result.name, 'From web')
+})
 test('another account and cross-origin pages cannot manage devices', async () => {
   const device = await register(), path = '/api/devices/' + device.id + '/commands'
   assert.equal((await call(path, 'POST', { kind: 'tunnel.stop', payload: {}, request_id: randomToken() }, secondOwner())).response.status, 404)
