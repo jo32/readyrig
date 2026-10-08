@@ -238,7 +238,7 @@ As with Chrome, a Safari window can reach whatever you are signed in to, `safari
 
 ### Privacy mode: hide local paths from agents
 
-Tool results normally contain real paths: `cwd`, `resolved_path`, `list_projects`, command output and error messages all show folders such as `/Users/you/Projects/app`, which name your account. **Privacy mode** (off by default) replaces them in everything an agent sees with tokens, and expands the tokens back when an agent uses them, so tool use keeps working:
+Tool results normally contain real paths: `cwd`, `resolved_path`, `list_projects`, command output and error messages all show folders such as `/Users/you/Projects/app`, which name your account. **Privacy mode** (on by default; a saved choice to turn it off is kept) replaces them in everything an agent sees with tokens, and expands the tokens back when an agent uses them, so tool use keeps working:
 
 | Real value | Token |
 | --- | --- |

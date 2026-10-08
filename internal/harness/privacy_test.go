@@ -60,16 +60,23 @@ func TestPrivacySettingsPersistAndValidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Enabled() {
-		t.Fatal("privacy mode must be off by default")
+	if !p.Enabled() {
+		t.Fatal("privacy mode must be on by default")
 	}
 	for _, bad := range []PrivacyWord{{Name: "1x", Value: "value"}, {Name: "ok", Value: "ab"}} {
-		if err := p.Set(PrivacySettings{Enabled: true, Words: []PrivacyWord{bad}}); err == nil {
+		if err := p.Set(PrivacySettings{Enabled: false, Words: []PrivacyWord{bad}}); err == nil {
 			t.Fatalf("accepted %+v", bad)
 		}
 	}
-	if p.Enabled() {
+	if !p.Enabled() {
 		t.Fatal("a rejected change was applied")
+	}
+	// A saved choice to turn it off is kept.
+	if err := p.SetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if off, err := NewPrivacy(file, nil); err != nil || off.Enabled() {
+		t.Fatalf("saved off was not kept: %v", err)
 	}
 	if err := p.Set(PrivacySettings{Enabled: true, MaskHost: true, Words: []PrivacyWord{{Name: "team", Value: "acme-corp"}}}); err != nil {
 		t.Fatal(err)
@@ -220,12 +227,12 @@ func TestPrivacyCoversEscapedPathsUserAndScreenshotPaths(t *testing.T) {
 	if v["screenshot"] != "${RR_ROOT_PROJ}/shot.png" || v["other"].(map[string]any)["data"] != "/work/proj" {
 		t.Fatalf("screenshot path or image data: %+v", v)
 	}
-	// The user and host names are masked by default once privacy mode is on.
+	// Privacy mode, with the user and host names, is on by default.
 	fresh, err := NewPrivacy(filepath.Join(t.TempDir(), "privacy.json"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := fresh.Settings(); !s.MaskUser || !s.MaskHost || s.Enabled {
+	if s := fresh.Settings(); !s.MaskUser || !s.MaskHost || !s.Enabled {
 		t.Fatalf("defaults: %+v", s)
 	}
 }

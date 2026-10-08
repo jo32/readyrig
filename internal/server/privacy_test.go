@@ -29,6 +29,12 @@ func TestPrivacyModeMasksPublicConsoleAndTurnsOff(t *testing.T) {
 		}
 		return w.Body.String()
 	}
+	if !s.Privacy.Enabled() || strings.Contains(publicState(), root) {
+		t.Fatal("privacy mode must be on by default")
+	}
+	if err := s.Privacy.SetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(publicState(), root) {
 		t.Fatal("the public console shows project folders while privacy mode is off")
 	}

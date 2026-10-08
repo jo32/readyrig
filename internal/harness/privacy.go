@@ -33,8 +33,8 @@ type Privacy struct {
 	OnChange func()
 }
 
-// PrivacySettings is saved in privacy.json. Home and project folders are always
-// masked while Enabled. The user and host names are masked by default too: they
+// PrivacySettings is saved in privacy.json. Privacy mode is on until the user
+// turns it off; home and project folders are always masked while Enabled. The user and host names are masked by default too: they
 // appear in ordinary output such as ls -l. Custom words are opt-in.
 type PrivacySettings struct {
 	Enabled  bool          `json:"enabled"`
@@ -79,7 +79,7 @@ var privacyWordName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,31}$`)
 // NewPrivacy loads the saved settings. projects lists the approved projects; call
 // Rebuild when they change.
 func NewPrivacy(file string, projects func() []Project) (*Privacy, error) {
-	p := &Privacy{file: file, projects: projects, settings: PrivacySettings{MaskUser: true, MaskHost: true}}
+	p := &Privacy{file: file, projects: projects, settings: PrivacySettings{Enabled: true, MaskUser: true, MaskHost: true}}
 	if file != "" {
 		b, err := os.ReadFile(file)
 		if err == nil {
