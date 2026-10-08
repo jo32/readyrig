@@ -137,7 +137,15 @@ func (s *Server) PublicUI() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		ui.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), publicUIKey{}, true)))
+		r = r.WithContext(context.WithValue(r.Context(), publicUIKey{}, true))
+		// The public console shows the audit log and project folders. In privacy mode
+		// they are masked as agents see them, including calls logged before it was on.
+		if strings.HasPrefix(path, "/api/") && !screenshot && s.Privacy.Enabled() {
+			masked := &maskedWriter{ResponseWriter: w, privacy: s.Privacy}
+			defer masked.finish()
+			w = masked
+		}
+		ui.ServeHTTP(w, r)
 	})
 }
 

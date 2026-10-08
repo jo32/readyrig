@@ -37,7 +37,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.prompt.submit({ text: 'second prompt', wait: false, origin: { kind: 'composer' } } as any)
 
     expect(sent[0]).toContain('run the tests')
-    expect(sent[0]).toContain('"tvbox" at /Users/me/tvbox on machine "my-mac" (computer_id: mac)')
+    expect(sent[0]).toContain('"tvbox" on machine "my-mac" (computer_id: mac)')
+    expect(sent[0]).toContain('project: "p1"')
+    expect(sent[0]).not.toContain('/Users/me/tvbox')
     expect(sent[1]).toBe('second prompt')
   })
 }

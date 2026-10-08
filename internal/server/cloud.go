@@ -21,7 +21,8 @@ func (s *Server) cloudSnapshot() any {
 	if s.Cloud != nil {
 		relay = s.Cloud.Relay()
 	}
-	return map[string]any{"version": buildinfo.Version, "platform": runtime.GOOS, "paused": paused, "enabled": enabled, "tunnel": s.tunnelStatus(true), "relay": map[string]string{"state": relay.State, "message": relay.Message}}
+	// Status messages can quote local paths (a missing cloudflared, for example).
+	return s.Privacy.RedactValue(map[string]any{"version": buildinfo.Version, "platform": runtime.GOOS, "paused": paused, "enabled": enabled, "tunnel": s.tunnelStatus(true), "relay": map[string]string{"state": relay.State, "message": relay.Message}, "privacy": map[string]bool{"enabled": s.Privacy.Enabled()}})
 }
 
 // tunnelReady reports whether public sharing currently has a working link. Relay mode only
@@ -75,6 +76,19 @@ func (s *Server) executeCloudCommand(cmd cloud.Command) error {
 			return nil
 		}
 		return s.Cloud.SetRelay(false)
+	case "privacy.set":
+		// The cloud service accepts privacy.set with enabled false only from the
+		// owner's signed-in console, never from an agent.
+		var in struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(cmd.Payload, &in); err != nil {
+			return err
+		}
+		if in.Enabled == nil {
+			return errors.New("缺少 enabled 设置")
+		}
+		return s.Privacy.SetEnabled(*in.Enabled)
 	case "control.pause":
 		var in struct {
 			Paused *bool `json:"paused"`

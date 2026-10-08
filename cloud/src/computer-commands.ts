@@ -4,7 +4,10 @@ import { now, randomToken, HTTPError, text } from './http.ts'
 type QueuedCommand = { id: string; kind: string; payload: string; status: string }
 type CommandHistory = QueuedCommand & { created_at: number; delivered_at: number | null; completed_at: number | null; error: string | null }
 
-export function validateCommand(kind: unknown, payload: unknown): { kind: string; payload: Record<string, unknown> } {
+// Where a command comes from: the owner's signed-in console, or an agent (cloud MCP or Bearer API).
+export type CommandSource = 'console' | 'agent'
+
+export function validateCommand(kind: unknown, payload: unknown, source: CommandSource = 'agent'): { kind: string; payload: Record<string, unknown> } {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new HTTPError(400, '无效的命令参数')
   const p = payload as Record<string, unknown>
   if (kind === 'tunnel.start' && (p.mode === 'quick' || p.mode === 'fixed')) return { kind, payload: { mode: p.mode } }
@@ -12,6 +15,12 @@ export function validateCommand(kind: unknown, payload: unknown): { kind: string
   // Relay can be switched off remotely but only started on the computer itself: it sends
   // tool data through this service, so the person at the computer must agree to it.
   if (kind === 'relay.stop') return { kind, payload: {} }
+  // Privacy mode hides local paths from agents. An agent may turn it on, but only the owner,
+  // in the console or on the computer, may turn it off.
+  if (kind === 'privacy.set' && typeof p.enabled === 'boolean') {
+    if (!p.enabled && source !== 'console') throw new HTTPError(403, '只有本人可在网页控制台或这台电脑上关闭隐私模式')
+    return { kind, payload: { enabled: p.enabled } }
+  }
   if (kind === 'control.pause' && typeof p.paused === 'boolean') return { kind, payload: { paused: p.paused } }
   if (kind === 'capability.set' && typeof p.category === 'string' && ['files', 'terminal', 'computer', 'browser'].includes(String(p.category)) && typeof p.enabled === 'boolean') return { kind, payload: { category: p.category, enabled: p.enabled } }
   throw new HTTPError(400, '不支持的命令或配置')
@@ -24,8 +33,8 @@ export async function commandHistory(env: Env, deviceID: string) {
   const { results } = await env.DB.prepare('SELECT id,kind,payload,status,created_at,delivered_at,completed_at,error FROM commands WHERE device_id=? ORDER BY created_at DESC,id DESC LIMIT 30').bind(deviceID).all<CommandHistory>()
   return { commands: results.map(c => ({ ...c, payload: JSON.parse(c.payload) })) }
 }
-export async function queueCommand(env: Env, deviceID: string, userID: string, input: Record<string, unknown>) {
-  const cmd = validateCommand(input.kind, input.payload), requestID = text(input.request_id, 64), payload = JSON.stringify(cmd.payload)
+export async function queueCommand(env: Env, deviceID: string, userID: string, input: Record<string, unknown>, source: CommandSource = 'agent') {
+  const cmd = validateCommand(input.kind, input.payload, source), requestID = text(input.request_id, 64), payload = JSON.stringify(cmd.payload)
   await expireCommands(env, deviceID)
   const previous = await env.DB.prepare('SELECT id,kind,payload,status FROM commands WHERE device_id=? AND request_id=?').bind(deviceID, requestID).first<QueuedCommand>()
   if (!previous) {

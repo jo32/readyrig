@@ -23,6 +23,7 @@ type Device = {
     enabled?: Record<string, boolean>
     tunnel?: { state?: string; message?: string; mode?: string; gateway?: string; mcp?: string; console?: string }
     relay?: { state?: string; message?: string }
+    privacy?: { enabled?: boolean }
   }
 }
 type Command = {
@@ -38,6 +39,7 @@ const commandNames: Record<string, string> = {
   'tunnel.start': '开启公网',
   'tunnel.stop': '关闭公网',
   'relay.stop': '关闭云端转发',
+  'privacy.set': '调整隐私模式',
   'control.pause': '调整暂停状态',
   'capability.set': '调整能力开关',
 }
@@ -406,6 +408,22 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
                 <span className="cloud-switch" aria-hidden="true" />
               </label>
             ))}
+            {/* Privacy mode shows agents ${RR_*} tokens instead of local paths. Only the owner may turn it off. */}
+            <label className={disabled ? 'is-disabled' : ''}>
+              <span className="cloud-capability-label">
+                <Icon name="shield" width="17" height="17" />
+                <span>{t('隐藏本机路径')}</span>
+              </span>
+              <input
+                type="checkbox"
+                aria-label={t('隐藏本机路径')}
+                role="switch"
+                checked={snapshot.privacy?.enabled || false}
+                disabled={disabled}
+                onChange={(e) => void send('privacy.set', { enabled: e.target.checked })}
+              />
+              <span className="cloud-switch" aria-hidden="true" />
+            </label>
           </div>
         </section>
       </div>

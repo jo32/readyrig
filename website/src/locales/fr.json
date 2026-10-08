@@ -515,5 +515,8 @@
   "此云端服务未开启云端转发": "Ce service cloud ne propose pas le transfert via le cloud",
   "设备凭证已失效，无法使用云端转发": "Les identifiants de l’appareil ont expiré ; le transfert via le cloud est inutilisable",
   "改用直连链接": "Utiliser un lien direct",
-  "会先关闭云端转发，再开启直连链接。": "Désactive d’abord le transfert via le cloud, puis démarre le lien."
+  "会先关闭云端转发，再开启直连链接。": "Désactive d’abord le transfert via le cloud, puis démarre le lien.",
+  "隐藏本机路径": "Masquer les chemins locaux",
+  "调整隐私模式": "Modifier le mode confidentialité",
+  "只有本人可在网页控制台或这台电脑上关闭隐私模式": "Vous seul pouvez désactiver le mode confidentialité, dans la console web ou sur l’ordinateur"
 }

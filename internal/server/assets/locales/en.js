@@ -658,4 +658,7 @@ const readyRigEnglish = {
   "设备凭证已失效，无法使用云端转发": "Device credentials have expired, so cloud forwarding cannot be used",
   "开启云端转发前，请确认数据将经 ReadyRig 云端服务器转发": "Before turning on cloud forwarding, confirm that your data will pass through ReadyRig cloud servers",
   "待命 · 直连链接正常，云端转发未连接": "Standby · The direct link works, so cloud forwarding is not connected",
+  "隐藏本机路径": "Hide local paths",
+  "Agent 看到 ${RR_HOME}、${RR_ROOT_…} 等代号，而不是用户目录和项目的真实路径；代号在工具参数里照常可用。本机、公网与云端连接都生效。": "Agents see tokens such as ${RR_HOME} and ${RR_ROOT_\u2026} instead of the real paths of your home and project folders, and can use the tokens in tool arguments as usual. Applies to local, public and cloud connections.",
+  "正在替换：{0}": "Replacing: {0}",
 };

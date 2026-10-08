@@ -47,6 +47,11 @@ Usage: readyrig [command] [options]
                               Opt-in backup for the tunnel: when it is down, tool calls travel over a WebSocket
                               through the cloud server, which sees file contents, command output
                               and screenshots. Idle while the tunnel works. Off by default; turned on only here, with --yes
+  privacy on|off|status        Privacy mode: agents see ${RR_*} tokens instead of your home and
+                              project folders; tokens in their arguments are expanded back
+  privacy user|host on|off    Also mask the user name or the computer's host name
+  privacy words [NAME=VALUE ...]
+                              Replace the custom words to mask (none clears them)
   service install|start|stop|restart|status|uninstall|print
                               Manage a Linux systemd user service
   update / version            Update the binary or print its version
@@ -141,7 +146,7 @@ func manageCLI(mode string, args []string, flags *flag.FlagSet, o *startupOption
 		return true, configureCLI(args, flags, o)
 	case "service":
 		return true, manageService(args, o.DataDir)
-	case "status", "connection", "tools", "call", "projects", "capability", "pause", "resume", "share", "cloud":
+	case "status", "connection", "tools", "call", "projects", "capability", "pause", "resume", "share", "cloud", "privacy":
 		method, path, input, session, err := controlAction(mode, args, o)
 		if err != nil {
 			return true, err
@@ -374,6 +379,29 @@ func controlAction(mode string, args []string, o *startupOptions) (method, path 
 			break
 		}
 		bad("share start [quick|fixed] | stop | status | configure --url URL --token-stdin")
+	case "privacy":
+		usage := "privacy on|off|status | user on|off | host on|off | words [NAME=VALUE ...]"
+		switch {
+		case len(args) == 1 && args[0] == "status":
+			get("/api/privacy")
+		case len(args) == 1 && (args[0] == "on" || args[0] == "off"):
+			path, input = "/api/privacy", map[string]bool{"enabled": args[0] == "on"}
+		case len(args) == 2 && (args[0] == "user" || args[0] == "host") && (args[1] == "on" || args[1] == "off"):
+			path, input = "/api/privacy", map[string]bool{"mask_" + args[0]: args[1] == "on"}
+		case len(args) >= 1 && args[0] == "words":
+			words := []map[string]string{}
+			for _, a := range args[1:] {
+				name, value, ok := strings.Cut(a, "=")
+				if !ok {
+					bad(usage)
+					return
+				}
+				words = append(words, map[string]string{"name": name, "value": value})
+			}
+			path, input = "/api/privacy", map[string]any{"words": words}
+		default:
+			bad(usage)
+		}
 	case "cloud":
 		if len(args) == 1 && args[0] == "status" {
 			get("/api/cloud")

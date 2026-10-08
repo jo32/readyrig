@@ -39,6 +39,7 @@ var assets embed.FS
 type Server struct {
 	Registry                                  *harness.Registry
 	Projects                                  *harness.Projects
+	Privacy                                   *harness.Privacy
 	Store                                     *store.Store
 	Computer                                  *computer.Computer
 	Chrome                                    *chromemcp.Bridge
@@ -158,6 +159,7 @@ func (s *Server) UI() http.Handler {
 	s.localOpenRoutes(mux)
 	s.tunnelRoutes(mux)
 	s.cloudRoutes(mux)
+	s.privacyRoutes(mux)
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		paused, enabled := s.Registry.State()
 		summary, err := s.Store.Summary()
@@ -190,7 +192,7 @@ func (s *Server) UI() http.Handler {
 			cliState = s.CLI
 			localCLI = s.LocalCLI
 		}
-		write(w, map[string]any{"public": remote, "paused": paused, "enabled": enabled, "summary": summary, "sessions": sessions, "tools": s.Registry.Specs(), "permissions": s.Computer.Permissions(), "workspace": s.activeWorkspace(), "project_access": s.projectState(), "local_open": localopen.Supported(), "gateway": gateway, "gateway_origin": origin, "version": buildinfo.Version, "chrome": chrome, "safari": safari, "update": updates, "cloud": cloudState, "cli": cliState, "local_cli": localCLI, "tunnel": s.tunnelStatus(remote)})
+		write(w, map[string]any{"public": remote, "paused": paused, "enabled": enabled, "summary": summary, "sessions": sessions, "tools": s.Registry.Specs(), "permissions": s.Computer.Permissions(), "workspace": s.activeWorkspace(), "project_access": s.projectState(), "local_open": localopen.Supported(), "gateway": gateway, "gateway_origin": origin, "version": buildinfo.Version, "chrome": chrome, "safari": safari, "update": updates, "cloud": cloudState, "cli": cliState, "local_cli": localCLI, "tunnel": s.tunnelStatus(remote), "privacy": s.privacyState(remote)})
 	})
 	mux.HandleFunc("POST /api/chrome/refresh", func(w http.ResponseWriter, r *http.Request) {
 		if s.Chrome != nil {

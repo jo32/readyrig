@@ -862,3 +862,16 @@ test('relay.stop is accepted for a standby relay', async () => {
   const stop = await call('/api/v1/computers/' + d.id + '/commands', 'POST', { kind: 'relay.stop', payload: {}, request_id: randomToken() }, token.headers)
   assert.equal(stop.response.status, 202)
 })
+
+test('privacy.set: the console turns it on and off, agents can only turn it on', async () => {
+  const d = await register(), token = await access()
+  const send = (path: string, enabled: boolean, headers: Record<string, string>) => call(path, 'POST', { kind: 'privacy.set', payload: { enabled }, request_id: randomToken() }, headers)
+  const fromConsole = (enabled: boolean) => send('/api/devices/' + d.id + '/commands', enabled, owner())
+  const fromAgent = (enabled: boolean) => send('/api/v1/computers/' + d.id + '/commands', enabled, token.headers)
+  assert.equal((await fromAgent(true)).response.status, 202)
+  assert.equal((await fromAgent(false)).response.status, 403)
+  assert.equal((await fromConsole(false)).response.status, 202)
+  assert.equal((await fromConsole(true)).response.status, 202)
+  await beat(d, { ...relaySnapshot('off'), privacy: { enabled: true } } as any)
+  assert.deepEqual((await call('/api/v1/computers/' + d.id, 'GET', undefined, token.headers)).result.computer.privacy, { enabled: true })
+})

@@ -92,9 +92,18 @@ func New(workspace, dataDir string) (*App, error) {
 	spillDir := filepath.Join(dataDir, "spill")
 	files.SpillDir = spillDir
 	projects.Register(registry)
+	privacy, err := harness.NewPrivacy(filepath.Join(dataDir, "privacy.json"), func() []harness.Project { return projects.Snapshot().Projects })
+	if err != nil {
+		files.Close()
+		s.Close()
+		return nil, err
+	}
+	privacy.OnChange = registry.Signal
+	registry.Privacy = privacy
 	processes := harness.NewProcesses(workspace)
 	processes.Projects = projects
 	processes.SpillDir = spillDir
+	processes.Privacy = privacy
 	c := computer.New(filepath.Join(dataDir, "screenshots"))
 	files.Register(registry)
 	processes.Register(registry)
@@ -123,10 +132,13 @@ func New(workspace, dataDir string) (*App, error) {
 	safari := chromemcp.NewSafari(registry)
 	safari.SetRoots(approvedRoots)
 	chrome.Link(safari.Refresh)
-	projects.OnChange = chrome.RootsChanged
+	projects.OnChange = func() {
+		chrome.RootsChanged()
+		privacy.Rebuild()
+	}
 	sharing := tunnel.New(tunnel.Options{Dir: filepath.Join(dataDir, "cloudflared"), Changed: registry.Signal, RedactSecrets: registry.AddSecrets})
 	ready = true
-	return &App{unlock: unlock, Server: &server.Server{Registry: registry, Projects: projects, Store: s, Computer: c, Chrome: chrome, Safari: safari, Tunnel: sharing, Workspace: workspace, AccessPath: accessPath, UIKey: uiKey}, Processes: processes, Files: files, Chrome: chrome, Safari: safari}, nil
+	return &App{unlock: unlock, Server: &server.Server{Registry: registry, Projects: projects, Privacy: privacy, Store: s, Computer: c, Chrome: chrome, Safari: safari, Tunnel: sharing, Workspace: workspace, AccessPath: accessPath, UIKey: uiKey}, Processes: processes, Files: files, Chrome: chrome, Safari: safari}, nil
 }
 func (a *App) Close() {
 	if a.Server.Cloud != nil {

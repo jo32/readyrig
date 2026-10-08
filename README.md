@@ -236,6 +236,26 @@ Safari's server writes files wherever it is told, and it has no notion of projec
 
 As with Chrome, a Safari window can reach whatever you are signed in to, `safari_evaluate_javascript` runs code in the page, and a `file://` page can show local files. Turn off the Safari switch to remove Safari while keeping Chrome, or the other way round.
 
+### Privacy mode: hide local paths from agents
+
+Tool results normally contain real paths: `cwd`, `resolved_path`, `list_projects`, command output and error messages all show folders such as `/Users/you/Projects/app`, which name your account. **Privacy mode** (off by default) replaces them in everything an agent sees with tokens, and expands the tokens back when an agent uses them, so tool use keeps working:
+
+| Real value | Token |
+| --- | --- |
+| Each approved project folder | `${RR_ROOT_<NAME>}`, for example `${RR_ROOT_COMPUTER_USE_SERVER}` |
+| Your home folder | `${RR_HOME}` |
+| The same paths as escaped JSON (`\/Users\/you`) | `${RR_HOME_ESCAPED}`, `${RR_ROOT_<NAME>_ESCAPED}` |
+| User name, host name (on by default) | `${RR_USER}`, `${RR_HOST}`, `${RR_HOST_SHORT}` |
+| Custom words (opt-in) | `${RR_<NAME>}` |
+
+- **Turn it on or off** in the local console (**Settings → Hide local paths**), in the web console (**Hide local paths** under the computer's access settings), with `readyrig privacy on|off|status`, or with `x` in the TUI. Agents can turn it on through the `privacy.set` cloud command but never off. The setting is saved in `privacy.json` in the data directory.
+- **User and host names** appear in ordinary output (`ls -l`, `whoami`, Git remotes, prompts), so they are masked too; names of four or more characters also match at the start of a longer word (`you-laptop`, `yours-team`). Turn either off with `readyrig privacy user off` or `readyrig privacy host off`.
+- **Custom words:** `readyrig privacy words EMAIL=you@example.com TEAM=acme-corp ...` (the list replaces the previous one; no arguments clears it). Words are 3 to 256 characters and match whole words only.
+- **Literal token text:** text that already starts like a token (a file documenting `${RR_HOME}`, say) is shown to agents as `${RR_DOLLAR}{RR_HOME}`, and `${RR_DOLLAR}` always expands back to `$`. So such files round-trip unchanged too, and an agent writes a literal `${RR_HOME}` as `${RR_DOLLAR}{RR_HOME}`.
+- **Tokens round-trip exactly.** Tokens in any tool argument (paths, `cwd`, commands, `edit_file` strings, `write_file` content, browser tool arguments) are expanded before the tool runs, even after privacy mode is turned off. Reading a file, editing it through tokens and writing it back leaves it byte for byte unchanged. Matches stop at name boundaries: `/Users/ann` is not masked inside `/Users/anna`.
+- **Where it applies:** every agent-facing result and error over local MCP, the tunnel gateway and the cloud relay, masked exactly once on its way out (calls inside `batch` and `use_tool` included); background notices and progress lines; command output, where a value that the cut in long output would split is dropped with the omitted middle, and a trailing fragment that could start a masked value is held back until more output completes it or the command ends; heartbeat status sent to ReadyRig Cloud; and everything the read-only public console serves (state, call history and export). The local audit log keeps real values, so the local console shows them and lists the tokens in use.
+- **Limits:** screenshots and other images, and `read_file` with `encoding=base64`, are not masked. It is not a sandbox: a command can still discover real paths, for example by encoding them. Paths on Windows are matched exactly as written (backslashes, original case).
+
 ### Cloud relay (backup for when the tunnel is unavailable)
 
 Cloud relay is an opt-in backup for the public link. The tunnel stays the main path. When it is down, or you cannot run `cloudflared` at all, the app opens one outbound **WebSocket** to your cloud site, and the cloud MCP (`list_computer_tools`, `call_computer_tool`) sends each tool call down that socket. An MCP client such as Gemini Spark keeps working with no tunnel and no inbound connection.
@@ -408,7 +428,7 @@ A client may also open `GET /mcp` with `Accept: text/event-stream` and its `Mcp-
 
 ### Claude Code: pick a project with /rp
 
-[`integrations/claude-code/rp`](integrations/claude-code/rp) is a Claude Code mod for people who use ReadyRig through its MCP server. `/rp` opens a pane listing the approved projects on every computer, grouped by machine; the project you pick is added to your next prompt with its machine name, `computer_id` and path, so the agent works in the right place. Install it at the Claude Code prompt:
+[`integrations/claude-code/rp`](integrations/claude-code/rp) is a Claude Code mod for people who use ReadyRig through its MCP server. `/rp` opens a pane listing the approved projects on every computer, grouped by machine; the project you pick is added to your next prompt with its machine name, `computer_id` and project ID (not its path), so the agent works in the right place. Install it at the Claude Code prompt:
 
 ```
 /plugin install rp --marketplace jo32/readyrig
@@ -469,6 +489,7 @@ Update management endpoints are local only: `GET /api/update`, `POST /api/update
 - **Desktop:** macOS requires Screen Recording and Accessibility permissions. In the local dashboard, use the “Grant access” shortcuts under Connection to open the matching System Settings pane, allow ReadyRig, and restart it. When started from a terminal, grant permission to that terminal app. The driver uses system screenshots and CoreGraphics input events, controls the main display with the real pointer, and has no accessibility element tree, background window input, OCR, browser extension, or display selector. Native Windows/Linux drivers return an explicit unsupported error. Input is rejected when the pointer is at a screen corner; drags check cancellation and corner conditions and release held buttons. Pause cannot undo completed actions.
 - **Network:** Agent and management interfaces are separate. Access paths use constant-time comparisons. REST/MCP reject browser Origin headers; the public read-only console permits same-origin GET/HEAD. The local console defends against cross-site requests and DNS rebinding. `--allow-ip 127.0.0.1/32,::1/128` restricts directly connected peers; client-supplied forwarded IPs are not trusted.
 - **Logs and credentials:** Per-run random paths stay in memory, and data directories are created with `0700` permissions. Logs redact token/password/secret fields, the current random path, and dashboard key, but cannot identify every secret in free text or images. Treat logs and screenshots as sensitive local data. Logs persist without automatic cleanup or quotas. SQLite records call start and completion; restart marks unfinished calls as `interrupted`. Long-running command output is saved as it changes, and final results are recorded without client polling. Screenshots are stored separately from list summaries.
+- **Privacy mode:** Masks local paths in what agents see with reversible `${RR_*}` tokens. It does not mask images or base64 file reads and is not a sandbox; see [Privacy mode](#privacy-mode-hide-local-paths-from-agents).
 - **Cloud relay:** Off by default. While connected (only when the tunnel is not working), tool arguments and results pass through ReadyRig Cloud in memory, unlike a tunnel; it can be enabled only at the computer after an explicit acknowledgement, never by a cloud command.
 - **Shared access:** Holders of an agent URL share one authorization identity. Sessions correlate logs rather than isolate tenants. Writes and clicks are not automatically retried. Turning off public sharing does not itself cancel commands already running.
 - **MCP:** The gateway implements a limited subset without claiming full protocol certification. A disconnect may cancel the current request; check logs before reconnecting and repeating an operation whose outcome is unknown. Quick Tunnel web, REST, and MCP access have been verified; integration with real cloud agent clients remains unverified.

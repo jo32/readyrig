@@ -49,6 +49,10 @@ type streamBuf struct {
 	spillBytes int64
 	last       time.Time
 	signal     chan struct{}
+	// privacy masks drained output; carry is a possible start of a masked value
+	// held back from the last drain while the process still runs.
+	privacy *Privacy
+	carry   []byte
 }
 
 func newStreamBuf(spillDir, name string) *streamBuf {
@@ -160,8 +164,10 @@ func tailBytes(b []byte, n int) []byte {
 	return b
 }
 
-// elide keeps the start and end of data when it exceeds limit.
-func elide(data []byte, limit, head int, extra int64) (string, bool) {
+// elide keeps the start and end of data when it exceeds limit. With privacy
+// mode on, a value the cut would split is dropped with the omitted middle, so
+// neither half reaches the agent unmasked.
+func elide(data []byte, limit, head int, extra int64, privacy *Privacy) (string, bool) {
 	if len(data) <= limit && extra == 0 {
 		return clean(data), false
 	}
@@ -169,17 +175,32 @@ func elide(data []byte, limit, head int, extra int64) (string, bool) {
 		return clean(data), true
 	}
 	h, t := headBytes(data, head), tailBytes(data, limit-head)
+	h, t = h[:len(h)-privacy.holdBack(h)], t[privacy.cutFragment(t):]
 	omitted := int64(len(data)-len(h)-len(t)) + extra
 	return clean(h) + fmt.Sprintf("\n… [%d bytes omitted] …\n", omitted) + clean(t), true
 }
 
-// Drain returns the output not yet read, cut to the response cap.
-func (b *streamBuf) Drain() (string, bool) {
+// Drain returns the output not yet read, cut to the response cap. The output
+// stays real; the registry masks the whole result once on its way out.
+func (b *streamBuf) Drain(finished bool) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	data, dropped := b.unread, b.dropped
 	b.unread, b.dropped = nil, 0
-	text, cut := elide(data, responseCap, headKeep, dropped)
+	if len(b.carry) > 0 {
+		data, b.carry = append(b.carry, data...), nil
+	}
+	if b.privacy.Enabled() {
+		// Held until more output completes it or the process ends, however long
+		// that takes: releasing it early would show the start of a masked value.
+		if !finished {
+			if n := b.privacy.holdBack(data); n > 0 {
+				b.carry = append([]byte(nil), data[len(data)-n:]...)
+				data = data[:len(data)-n]
+			}
+		}
+	}
+	text, cut := elide(data, responseCap, headKeep, dropped, b.privacy)
 	return text, cut
 }
 
@@ -222,6 +243,8 @@ type Processes struct {
 	Projects *Projects
 	// SpillDir keeps the full output of commands whose output exceeds a response.
 	SpillDir string
+	// Privacy masks command output as it is read.
+	Privacy *Privacy
 }
 
 func NewProcesses(root string) *Processes {
@@ -404,6 +427,7 @@ func (p *Processes) start(ctx context.Context, in Invocation) (Output, error) {
 	processCtx, cancel := context.WithTimeout(context.Background(), time.Duration(a.Timeout)*time.Second)
 	pr := &process{done: make(chan struct{}), cancel: cancel, session: in.Session, cwd: cwd, timeout: a.Timeout, started: time.Now(), command: clipCommand(a.Command), activity: make(chan struct{}, 1), stdout: newStreamBuf(spillDir, id+".stdout"), stderr: newStreamBuf(spillDir, id+".stderr")}
 	pr.stdout.signal, pr.stderr.signal = pr.activity, pr.activity
+	pr.stdout.privacy, pr.stderr.privacy = p.Privacy, p.Privacy
 	shell, flags := "/bin/sh", []string{"-c"}
 	if a.LoginShell {
 		shell, flags = loginShell(), []string{"-l", "-c"}
@@ -592,8 +616,8 @@ func poll(ctx context.Context, pr *process, id string, yield int, onOutput, kill
 		default:
 		}
 	}
-	stdout, a := pr.stdout.Drain()
-	stderr, b := pr.stderr.Drain()
+	stdout, a := pr.stdout.Drain(finished)
+	stderr, b := pr.stderr.Drain(finished)
 	// Output just drained must not wake the next long poll.
 	select {
 	case <-pr.activity:

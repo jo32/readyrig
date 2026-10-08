@@ -515,5 +515,8 @@
   "此云端服务未开启云端转发": "Dieser Cloud-Dienst bietet keine Cloud-Weiterleitung",
   "设备凭证已失效，无法使用云端转发": "Die Gerätezugangsdaten sind abgelaufen, daher ist die Cloud-Weiterleitung nicht nutzbar",
   "改用直连链接": "Stattdessen direkten Link verwenden",
-  "会先关闭云端转发，再开启直连链接。": "Schaltet zuerst die Cloud-Weiterleitung aus und startet dann den Link."
+  "会先关闭云端转发，再开启直连链接。": "Schaltet zuerst die Cloud-Weiterleitung aus und startet dann den Link.",
+  "隐藏本机路径": "Lokale Pfade verbergen",
+  "调整隐私模式": "Datenschutzmodus ändern",
+  "只有本人可在网页控制台或这台电脑上关闭隐私模式": "Nur Sie können den Datenschutzmodus ausschalten – in der Webkonsole oder am Computer"
 }

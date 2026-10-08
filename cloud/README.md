@@ -22,6 +22,7 @@ MCP client ──/mcp──▶ Worker ──▶ RelayHub (Durable Object, one pe
 - Calls time out after 55 seconds, at which point the hub sends `cancel`. A timeout or a dropped socket reports that execution may have occurred; a computer with no socket reports that nothing was sent. Calls are never retried. The app runs at most eight at once and refuses results over 8 MiB.
 - The app keeps the socket open only while its tunnel is not ready; with a working tunnel the relay is `standby` and nothing is connected. `computerTool` tries the tunnel first and uses the relay when the computer reports `relay.state: "connected"` and there is no usable link, or the tunnel edge answers `530`. Other tunnel failures are not replayed over the relay.
 - Computers report `relay: { state, message }` (`off`, `standby`, `connecting`, `connected`, `error`) in the heartbeat snapshot. `GET /api/v1/computers` returns `relay: { state }`, which is `off` for an offline computer.
+- `privacy.set` (payload `{"enabled": boolean}`) turns the computer's privacy mode on or off. Agents (cloud MCP and Bearer API) may only send `enabled: true`; turning it off is accepted only from the owner's signed-in console (`/api/devices/{id}/commands`). Heartbeats report `privacy: { enabled }`, and `GET /api/v1/computers` includes it.
 - `relay.stop` (payload `{}`) turns relay off. There is deliberately no command that turns it on, because that needs the consent of the person at the computer. The app enables it with the local console, `readyrig cloud relay on --yes`, or the terminal dashboard.
 - The cloud REST API does not relay tool calls. Only the MCP tools do, so REST-only agents still need a tunnel.
 
@@ -107,6 +108,7 @@ To enable shell access, submit this JSON to the command endpoint:
 | `tunnel.start` | `mode`: `quick` or `fixed` | Start public sharing; fixed mode uses the computer's saved configuration |
 | `tunnel.stop` | `{}` | Stop public sharing |
 | `relay.stop` | `{}` | Turn relay mode off (it can only be turned on at the computer) |
+| `privacy.set` | `{"enabled": true}` | Hide local paths from agents (agents can only turn it on; the console can also turn it off) |
 | `control.pause` | Boolean `paused` | Pause or resume tool control |
 
 A submission returns HTTP 202 with `id`, `kind`, `payload`, and `status`. It initially has status `queued`; the computer receives it on its next heartbeat and reports `completed` or `failed`. Poll command receipts for that ID before claiming success. Commands share the console's queue, with at most 20 pending/executing commands. Pending requests expire after five minutes, and unconfirmed execution expires after 90 seconds without automatic redelivery. Offline computers must reconnect to execute requests. Retries use the same `request_id` (at most 64 UTF-8 bytes) and identical command; a conflicting reuse returns 409. An idempotent retry works even if the queue is full.

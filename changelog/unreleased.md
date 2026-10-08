@@ -1,1 +1,9 @@
 # Unreleased
+
+## Added
+
+- **Privacy mode** hides local paths from agents. While it is on, home and project folders in every agent-facing result, error, notice and command output appear as `${RR_HOME}` and `${RR_ROOT_<NAME>}` tokens, and tokens in tool arguments are expanded back, so reading, editing and writing files and running commands work unchanged; files round-trip byte for byte. The user and host names are masked too (on by default; they show up in `ls -l`, `whoami` and Git remotes), as are slash-escaped JSON paths and any custom words you add. The read-only public console is masked the same way. Off by default; turn it on or off in the local console (Settings → Hide local paths), the web console, `readyrig privacy on|off|status` or `x` in the TUI. Agents can turn it on with the `privacy.set` cloud command but never off. Needs the cloud service redeployed for the web console switch and `privacy.set`.
+
+## Changed
+
+- `/rp` no longer puts the project's absolute path in your prompt. It names the project and tells the agent to pass its ID as `project` and use relative paths.

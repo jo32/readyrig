@@ -67,11 +67,13 @@ async function load($: EngineInterface) {
   await update($, isLoading, () => false)
 }
 
+// The folder's path stays out of the prompt: it can name the user, and the
+// project argument is all the tools need. Relative paths resolve inside it.
 function contextFor(p: RpPick): string {
   return (
-    `[ReadyRig project: "${p.project.name}" at ${p.project.path} ` +
-    `on machine "${p.machineName}" (computer_id: ${p.machineId}). ` +
-    `Use this machine and project for this request.]`
+    `[ReadyRig project: "${p.project.name}" on machine "${p.machineName}" ` +
+    `(computer_id: ${p.machineId}). Use this machine for this request: pass ` +
+    `project: "${p.project.id}" to its tools and use paths relative to the project.]`
   )
 }
 

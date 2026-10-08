@@ -515,5 +515,8 @@
   "此云端服务未开启云端转发": "Este servicio en la nube no ofrece reenvío por la nube",
   "设备凭证已失效，无法使用云端转发": "Las credenciales del dispositivo han caducado, por lo que no se puede usar el reenvío por la nube",
   "改用直连链接": "Usar un enlace directo",
-  "会先关闭云端转发，再开启直连链接。": "Primero desactiva el reenvío por la nube y luego inicia el enlace."
+  "会先关闭云端转发，再开启直连链接。": "Primero desactiva el reenvío por la nube y luego inicia el enlace.",
+  "隐藏本机路径": "Ocultar rutas locales",
+  "调整隐私模式": "Cambiar el modo de privacidad",
+  "只有本人可在网页控制台或这台电脑上关闭隐私模式": "Solo tú puedes desactivar el modo de privacidad, en la consola web o en el equipo"
 }

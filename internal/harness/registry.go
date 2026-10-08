@@ -181,6 +181,9 @@ type Registry struct {
 	secretsMu sync.RWMutex
 	secrets   []string
 	OnPause   func()
+	// Privacy, when set, masks local paths in results and events and expands
+	// its tokens in arguments.
+	Privacy *Privacy
 }
 
 func New(s *store.Store, secrets ...string) *Registry {
@@ -290,6 +293,7 @@ func (r *Registry) Subscribe(session string) (<-chan Event, func()) {
 // next call collects it with TakeNotices, so plain request/response clients
 // still learn that a background job finished.
 func (r *Registry) Publish(e Event) {
+	e = r.Privacy.redactEvent(e)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	live := false
@@ -370,6 +374,9 @@ func (r *Registry) ProgressFor(session, tool string) []Event {
 	if len(out) > 5 {
 		extra := len(out) - 5
 		out = append(out[:5], Event{Session: session, Kind: "task_progress", Data: map[string]any{"text": fmt.Sprintf("+%d more running tasks; list_tasks shows all", extra)}})
+	}
+	for i := range out {
+		out[i] = r.Privacy.redactEvent(out[i])
 	}
 	return out
 }
@@ -614,6 +621,10 @@ func (r *Registry) finishActive(id string) {
 	}
 	r.mu.Unlock()
 }
+
+// privacyApplied marks a context whose call already expands and masks.
+type privacyApplied struct{}
+
 func (r *Registry) Invoke(ctx context.Context, name string, in Invocation) (out Output, call store.Call, err error) {
 	r.foreground.Add(1)
 	defer r.foreground.Done()
@@ -627,6 +638,14 @@ func (r *Registry) Invoke(ctx context.Context, name string, in Invocation) (out 
 	r.mu.Lock()
 	t, ok := r.tools[name]
 	r.mu.Unlock()
+	// Privacy tokens are expanded, and results masked, exactly once: by the
+	// outermost call. batch and use_tool run their calls inside it. Masking twice
+	// would escape the first pass's tokens. The audit log keeps real values; the
+	// public console masks it as it serves it.
+	outer := ctx.Value(privacyApplied{}) == nil
+	if outer {
+		in.Arguments = r.Privacy.ExpandJSON(in.Arguments)
+	}
 	call = store.Call{ID: in.ID, Session: in.Session, Client: in.Client, Tool: name, Category: t.Spec.Category, Status: "running", Started: time.Now(), Arguments: r.redact(labelled(t, in.Arguments))}
 	if err = r.store.Save(call); err != nil {
 		return out, call, fmt.Errorf("audit log unavailable: %w", err)
@@ -687,6 +706,11 @@ func (r *Registry) Invoke(ctx context.Context, name string, in Invocation) (out 
 			}
 			r.finishActive(in.ID)
 		}
+		if outer {
+			err = r.Privacy.redactError(err)
+			call.Error = r.Privacy.Redact(call.Error)
+			r.Privacy.redactOutput(&out)
+		}
 		r.Signal()
 	}()
 	if !ok {
@@ -744,7 +768,7 @@ func (r *Registry) Invoke(ctx context.Context, name string, in Invocation) (out 
 	if t.Spec.Mutating && !t.External {
 		in.Arguments = stripDescription(in.Arguments)
 	}
-	out, err = t.Run(ctx, in)
+	out, err = t.Run(context.WithValue(ctx, privacyApplied{}, true), in)
 	return
 }
 func (r *Registry) follow(saved store.Call, out Output) {

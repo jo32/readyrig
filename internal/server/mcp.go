@@ -19,7 +19,7 @@ type rpc struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-const mcpInstructions = "ReadyRig gives you a computer. Use read_file, edit_file, write_file, list_directory, glob and search_files for files, not cat/sed/grep/find. exec_command returns exit codes as data; long output is cut and saved (read_file at stdout_path). For long jobs use background=true: results then carry [progress] lines and a [notice] when it ends; list_tasks lists jobs; write_stdin with a long yield_time_ms waits for completion. batch runs several tools in one request. Desktop: take a fresh screenshot before coordinate actions and chain steps with actions[]. Tools in group advanced are not listed: see help compact, run with use_tool. exec_command is not sandboxed."
+const mcpInstructions = "ReadyRig gives you a computer. Use read_file, edit_file, write_file, list_directory, glob and search_files for files, not cat/sed/grep/find. exec_command returns exit codes as data; long output is cut and saved (read_file at stdout_path). For long jobs use background=true: results then carry [progress] lines and a [notice] when it ends; list_tasks lists jobs; write_stdin with a long yield_time_ms waits for completion. batch runs several tools in one request. Desktop: take a fresh screenshot before coordinate actions and chain steps with actions[]. Tools in group advanced are not listed: see help compact, run with use_tool. exec_command is not sandboxed. Use ${RR_*} path tokens as-is."
 
 // rpcKey identifies an in-flight request so notifications/cancelled can find it.
 func rpcKey(sid string, id json.RawMessage) string {

@@ -54,7 +54,7 @@ After you pick a project:
 - The next prompt you send gets one line added at the end:
 
   ```
-  [ReadyRig project: "computer-use-server" at /Users/jo32/Projects/computer-use-server on machine "jiangdailins-MacBook-Pro.local" (computer_id: 0WNo…). Use this machine and project for this request.]
+  [ReadyRig project: "computer-use-server" on machine "jiangdailins-MacBook-Pro.local" (computer_id: 0WNo…). Use this machine for this request: pass project: "a3e4…" to its tools and use paths relative to the project.]
   ```
 
 - It is added once, then cleared. Slash commands are left alone, so `/rp` again or any other command does not use it up.

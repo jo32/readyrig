@@ -156,7 +156,7 @@ func TestOutputKeepsHeadAndTailAndSpills(t *testing.T) {
 	b.Write([]byte("START-"))
 	b.Write([]byte(strings.Repeat("x", 200*1024)))
 	b.Write([]byte("-END"))
-	text, cut := b.Drain()
+	text, cut := b.Drain(false)
 	if !cut || len(text) > responseCap+100 || !strings.HasPrefix(text, "START-") || !strings.HasSuffix(text, "-END") || !strings.Contains(text, "bytes omitted") {
 		t.Fatalf("head/tail broken: cut=%v len=%d", cut, len(text))
 	}
@@ -168,7 +168,7 @@ func TestOutputKeepsHeadAndTailAndSpills(t *testing.T) {
 	if err != nil || len(saved) != 6+200*1024+4 || !strings.HasPrefix(string(saved), "START-") {
 		t.Fatalf("spill incomplete: %d %v", len(saved), err)
 	}
-	if text, _ = b.Drain(); text != "" {
+	if text, _ = b.Drain(false); text != "" {
 		t.Fatal("drain repeated output")
 	}
 	snap, _ := b.Snapshot()
@@ -180,7 +180,7 @@ func TestSmallOutputIsNotSpilled(t *testing.T) {
 	dir := t.TempDir()
 	b := newStreamBuf(dir, "0123456789abcdef01234567.stdout")
 	b.Write([]byte("hello"))
-	if text, cut := b.Drain(); text != "hello" || cut || b.path() != "" {
+	if text, cut := b.Drain(false); text != "hello" || cut || b.path() != "" {
 		t.Fatal(text, cut, b.path())
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {

@@ -515,5 +515,8 @@
   "此云端服务未开启云端转发": "This cloud service does not offer cloud forwarding",
   "设备凭证已失效，无法使用云端转发": "Device credentials have expired, so cloud forwarding cannot be used",
   "改用直连链接": "Use a direct link instead",
-  "会先关闭云端转发，再开启直连链接。": "Turns off cloud forwarding first, then starts the link."
+  "会先关闭云端转发，再开启直连链接。": "Turns off cloud forwarding first, then starts the link.",
+  "隐藏本机路径": "Hide local paths",
+  "调整隐私模式": "Change privacy mode",
+  "只有本人可在网页控制台或这台电脑上关闭隐私模式": "Only you can turn off privacy mode, in the web console or on the computer"
 }

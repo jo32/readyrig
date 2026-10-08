@@ -62,7 +62,7 @@ export function sanitizeSnapshot(raw: unknown): Record<string, unknown> {
   for (const key of ['mode', 'state', 'message', 'url', 'gateway', 'console', 'mcp']) if (typeof t[key] === 'string' && t[key].length <= 2048) tunnel[key] = t[key]
   const r = v.relay || {}, relay: Record<string, unknown> = {}
   for (const key of ['state', 'message']) if (typeof r[key] === 'string' && r[key].length <= 512) relay[key] = r[key]
-  return { version: typeof v.version === 'string' ? v.version.slice(0, 64) : '', platform: typeof v.platform === 'string' ? v.platform.slice(0, 32) : '', paused: v.paused === true, enabled, tunnel, relay }
+  return { version: typeof v.version === 'string' ? v.version.slice(0, 64) : '', platform: typeof v.platform === 'string' ? v.platform.slice(0, 32) : '', paused: v.paused === true, enabled, tunnel, relay, privacy: { enabled: v.privacy?.enabled === true } }
 }
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url), path = url.pathname
@@ -194,7 +194,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (match) {
       const device = await owned(env, match[1], owner)
       if (match[2] && req.method === 'GET') return json(await commandHistory(env, device.id))
-      if (match[2] && req.method === 'POST') return json(await queueCommand(env, device.id, owner.id, await body(req)), 202)
+      if (match[2] && req.method === 'POST') return json(await queueCommand(env, device.id, owner.id, await body(req), 'console'), 202)
       if (!match[2] && req.method === 'PATCH') { const input = await body(req); await env.DB.prepare('UPDATE devices SET name=? WHERE id=? AND revoked_at IS NULL').bind(text(input.name), device.id).run(); return json({ ok: true }) }
       if (!match[2] && req.method === 'DELETE') { await revoke(env, device.id); return json({ ok: true }) }
     }
