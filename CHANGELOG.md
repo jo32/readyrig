@@ -5,6 +5,7 @@ Notable changes to ReadyRig, one file per version under [`changelog/`](changelog
 New entries go in [`changelog/unreleased.md`](changelog/unreleased.md). A release renames it to `changelog/<version>.md` (its title becomes `# <version>`), starts a new `unreleased.md` and adds the version to this list; the release workflow refuses a tag whose file is missing.
 
 - [Unreleased](changelog/unreleased.md)
+- [0.6.24](changelog/0.6.24.md)
 - [0.6.23](changelog/0.6.23.md)
 - [0.6.22](changelog/0.6.22.md)
 - [0.6.21](changelog/0.6.21.md)
