@@ -50,14 +50,14 @@ export function CloudMCP() {
         <div className="cloud-mcp-body">
         {panel === 'connect' && <div className="cloud-mcp-connect">
           <section className="cloud-mcp-prompt" aria-labelledby="mcp-prompt-title">
-            <div className="cloud-mcp-intro"><h3 id="mcp-prompt-title">{t('让助手帮你配置')}</h3><p>{t('复制这段提示词，发送给你的 AI 助手。助手会配置连接，或指导你完成设置；登录授权仍由你确认。')}</p></div>
+            <div className="cloud-mcp-intro"><h3 id="mcp-prompt-title">{t('让 AI 来设置')}</h3><p>{t('复制这段提示词，发送给你的 AI 助手。助手会配置连接，或指导你完成设置；登录授权仍由你确认。')}</p></div>
             {url ? <>
-              <CopyButton text={mcpSetupPrompt(url, t)} label="复制配置提示词" />
-              <details><summary>{t('查看提示词')}</summary><label className="cloud-mcp-field">{t('配置提示词')}<textarea readOnly rows={7} value={mcpSetupPrompt(url, t)} /></label></details>
+              <CopyButton text={mcpSetupPrompt(url, t)} label="复制说明" />
+              <details><summary>{t('查看说明')}</summary><label className="cloud-mcp-field">{t('配置提示词')}<textarea readOnly rows={7} value={mcpSetupPrompt(url, t)} /></label></details>
             </> : <p role="status">{t('正在加载 MCP 地址…')}</p>}
           </section>
           <div className="cloud-mcp-intro"><h3>Gemini Spark</h3><p>{t('复制地址，登录授权，即可连接你的电脑。')}</p></div>
-          <label className="cloud-mcp-field">MCP Server URL<div className="cloud-mcp-url"><input readOnly value={url} />{url && <CopyButton text={url} label="复制地址" />}</div></label>
+          <label className="cloud-mcp-field">MCP Server URL<div className="cloud-mcp-url"><input readOnly value={url} />{url && <CopyButton text={url} label="复制链接" />}</div></label>
           <ol className="cloud-mcp-steps"><li><span>1</span><div>{t('打开 Gemini Spark 的 Connected Apps')}</div></li><li><span>2</span><div>{t('粘贴 MCP 地址，点击 Next')}<small>{t('Client ID 和 secret 留空，系统会自动配置。')}</small></div></li><li><span>3</span><div>{t('登录 ReadyRig 并确认授权')}</div></li></ol>
           <p className="cloud-mcp-notice">{t('电脑需在线并开启公网分享。连接后，助手可调用你已开启的电脑工具。')}</p>
         </div>}

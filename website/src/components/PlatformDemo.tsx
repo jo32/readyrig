@@ -178,7 +178,7 @@ export function PlatformDemo() {
                         </>
                       ) : (
                         <>
-                          <span>{t('ReadyRig → 连接 → 公网')}</span>
+                          <span>{t('ReadyRig → 设置 → 远程')}</span>
                           <strong>{t('复制 Prompt → 粘贴到对话')}</strong>
                         </>
                       )}

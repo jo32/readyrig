@@ -46,8 +46,8 @@ const commandNames: Record<string, string> = {
 const statusNames: Record<string, string> = {
   queued: '等待电脑领取',
   executing: '已送达，等待结果',
-  completed: '已执行',
-  failed: '执行失败',
+  completed: '完成',
+  failed: '失败',
   expired: '已过期',
   revoked: '设备已解绑',
 }
@@ -64,8 +64,8 @@ const relayStatusNames: Record<string, string> = {
 const capabilities: Record<string, string> = {
   files: '文件',
   terminal: '终端',
-  browser: 'Chrome 浏览器',
-  computer: '桌面操作',
+  browser: 'Chrome',
+  computer: '屏幕控制',
 }
 const capabilityIcons: Record<string, IconName> = {
   files: 'folder',
@@ -248,7 +248,7 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
             {t(device.online ? '在线' : '离线')}
           </span>
           <span className="cloud-last-seen" title={time(device.last_seen, locale, t('尚未上报'))}>
-            {t('最近心跳')} ·{' '}
+            {t('最近在线')} ·{' '}
             {device.last_seen
               ? new Date(device.last_seen * 1000).toLocaleString(locale, {
                   month: 'short',
@@ -262,9 +262,9 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
         </div>
       </div>
       <div className="cloud-device-body">
-        <section className="cloud-sharing" aria-label={t('公网访问')}>
+        <section className="cloud-sharing" aria-label={t('远程访问')}>
           <div className="cloud-section-heading">
-            <h3>{t('公网访问')}</h3>
+            <h3>{t('远程访问')}</h3>
             <span className={`cloud-tunnel-status ${tunnelReady || relayState === 'connected' ? 'ready' : ''}`}>{t(summaryLine)}</span>
           </div>
           {!cloudActive && (
@@ -274,7 +274,7 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
             <span className="cloud-route-badge">{t('推荐')}</span>
           </div>
           <p className="cloud-route-flow">
-            {t('Agent → Cloudflare → 这台电脑')} · {t('数据不经过 ReadyRig 服务器')}
+            {t('Agent → Cloudflare → 这台电脑')} · {t('最快最私密，数据不经我们的服务器')}
           </p>
           <p className="cloud-sharing-copy">
             {t(
@@ -293,7 +293,7 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
                 disabled={disabled}
               >
                 <option value="quick">{t('一次性链接')}</option>
-                <option value="fixed">{t('固定域名')}</option>
+                <option value="fixed">{t('你的域名')}</option>
               </select>
             )}
             <button
@@ -307,7 +307,7 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
           {tunnel.state === 'ready' && tunnel.gateway && (
             <>
               <div className="cloud-address">
-                <label>{t('Agent 地址')}</label>
+                <label>{t('Agent 链接')}</label>
                 <code>{tunnel.gateway}</code>
                 <button
                   className="button button-secondary"
@@ -317,7 +317,7 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
                       .catch(() => setError(t('复制失败，请手动复制地址')))
                   }}
                 >
-                  {t('复制地址')}
+                  {t('复制链接')}
                 </button>
               </div>
               <details className="cloud-prompt-preview">
@@ -334,7 +334,7 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
           )}
           <div className={`cloud-route ${relayState === 'connected' ? 'is-active' : ''}`}>
             <div className="cloud-route-head">
-              <strong>{t('经 ReadyRig 云端')}</strong>
+              <strong>{t('经 ReadyRig')}</strong>
               <span className={`cloud-tunnel-status ${relayState === 'connected' ? 'ready' : ''}`}>
                 {t(relayStatusNames[relayState])}
               </span>
@@ -349,7 +349,7 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
               )}
             </div>
             <p className="cloud-route-flow">
-              {t('Agent → ReadyRig 云端 → 这台电脑')} · {t('数据会经过 ReadyRig 服务器')}
+              {t('Agent → ReadyRig 云端 → 这台电脑')} · {t('随处可用，但数据会经我们的服务器')}
             </p>
             <p className={`cloud-route-copy ${relayOn && relayState !== 'standby' ? 'cloud-relay-warning' : ''}`}>
               {t(
@@ -370,7 +370,7 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
                     void navigator.clipboard.writeText(mcpURL).catch(() => setError(t('复制失败，请手动复制地址')))
                   }}
                 >
-                  {t('复制地址')}
+                  {t('复制链接')}
                 </button>
               </div>
             )}
@@ -385,9 +385,9 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
             </div>
           )}
         </section>
-        <section className="cloud-access" aria-label={t('访问权限')}>
+        <section className="cloud-access" aria-label={t('权限')}>
           <div className="cloud-section-heading">
-            <h3>{t('访问权限')}</h3>
+            <h3>{t('权限')}</h3>
             <span className="cloud-access-state">{t(snapshot.paused ? '控制已暂停' : '可用工具')}</span>
           </div>
           <div className="cloud-capabilities">
@@ -412,11 +412,11 @@ function DeviceCard({ device, refresh }: { device: Device; refresh: () => Promis
             <label className={disabled ? 'is-disabled' : ''}>
               <span className="cloud-capability-label">
                 <Icon name="shield" width="17" height="17" />
-                <span>{t('隐藏本机路径')}</span>
+                <span>{t('隐藏信息')}</span>
               </span>
               <input
                 type="checkbox"
-                aria-label={t('隐藏本机路径')}
+                aria-label={t('隐藏信息')}
                 role="switch"
                 checked={snapshot.privacy?.enabled || false}
                 disabled={disabled}
@@ -570,7 +570,7 @@ export default function CloudConsole() {
         {user && (
           <div className="cloud-title">
             <div>
-              <h1>{t('已连接的电脑')}</h1>
+              <h1>{t('我的电脑')}</h1>
               <p>{t('管理已连接电脑的共享和访问权限。')}</p>
             </div>
             <div className="cloud-title-actions">
@@ -654,13 +654,13 @@ export default function CloudConsole() {
             ) : (
               <div className="cloud-empty">
                 <h2>{t('还没有绑定的电脑')}</h2>
-                <p>{t('打开 ReadyRig → 连接 → 云端账号，填写本站地址并登录 Google。')}</p>
+                <p>{t('打开 ReadyRig → 设置 → 账号，填写本站地址并登录 Google。')}</p>
                 <code>{location.origin}</code>
               </div>
             )}
             <details className="cloud-help">
               <summary>
-                {t('连接与设备说明')}
+                {t('运作方式')}
                 <Icon name="chevron" width="14" height="14" />
               </summary>
               <p>

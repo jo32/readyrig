@@ -65,7 +65,7 @@ Check `GET /api/health`: `google_configured: true` means both configuration valu
 
 ## Use the cloud console
 
-1. Open **ReadyRig → Connection → Cloud account**. The official URL is prefilled; you can enter your own deployment.
+1. Open **ReadyRig → Settings → Account**. The official URL is prefilled; you can enter your own deployment.
 2. Click **Sign in with Google**, sign in through the system browser, verify the six-digit code shown in the app, and confirm device binding.
 3. Sign in to the web console with the same account to view computer status, start/stop public sharing, choose temporary or fixed tunnels, rename devices, change file/terminal/browser/desktop switches, and pause/resume control.
 

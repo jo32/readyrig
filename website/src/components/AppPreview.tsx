@@ -9,9 +9,9 @@ type View = 'activity' | 'projects' | 'tools' | 'connection'
 
 const viewsData: { value: View; label: string }[] = [
   { value: 'activity', label: '活动日志' },
-  { value: 'projects', label: '项目目录' },
+  { value: 'projects', label: '文件夹' },
   { value: 'tools', label: '工具库' },
-  { value: 'connection', label: '连接' },
+  { value: 'connection', label: '设置' },
 ]
 
 const callsData = [
@@ -54,10 +54,10 @@ const callsData = [
 ] satisfies { time: string; tool: string; args: string; icon: IconName; duration: string; input: string; output: string }[]
 
 const capabilitiesData: { key: string; icon: IconName; title: string; description: string }[] = [
-  { key: 'files', icon: 'folder', title: '文件系统', description: '读取、写入与搜索已授权的项目目录' },
-  { key: 'shell', icon: 'terminal', title: '终端执行', description: '运行本机命令，查看实时输出' },
-  { key: 'desktop', icon: 'monitor', title: '桌面操作', description: 'macOS 截图、鼠标与键盘操作' },
-  { key: 'chrome', icon: 'browser', title: 'Chrome 浏览器', description: '接入官方 Chrome DevTools MCP' },
+  { key: 'files', icon: 'folder', title: '文件', description: '读取、编辑和搜索你的文件。' },
+  { key: 'shell', icon: 'terminal', title: '终端', description: '以你的身份运行命令，权限等同你的账户。' },
+  { key: 'desktop', icon: 'monitor', title: '屏幕控制', description: '使用你的鼠标键盘。鼠标移到角落即停止。' },
+  { key: 'chrome', icon: 'browser', title: 'Chrome', description: '接入官方 Chrome DevTools MCP' },
 ]
 
 function ActivityPreview() {
@@ -69,7 +69,7 @@ function ActivityPreview() {
       <div className="preview-stats">
         <div>
           <strong>24</strong>
-          <span>{t('工具调用')}</span>
+          <span>{t('操作次数')}</span>
         </div>
         <div>
           <strong>
@@ -81,7 +81,7 @@ function ActivityPreview() {
           <strong>
             86<span className="stat-unit">ms</span>
           </strong>
-          <span>{t('平均耗时')}</span>
+          <span>{t('平均用时')}</span>
         </div>
         <div>
           <strong>1</strong>
@@ -123,12 +123,12 @@ function ActivityPreview() {
             {expanded === index ? (
               <div className="log-detail">
                 <div>
-                  <span>{t('输入参数')}</span>
+                  <span>{t('输入')}</span>
                   <pre>{call.input}</pre>
                 </div>
                 <div>
                   <span>
-                    {t('执行结果')}
+                    {t('输出')}
                     <Icon name="check" width="13" height="13" />
                   </span>
                   <pre>{call.output}</pre>
@@ -153,12 +153,12 @@ function ProjectsPreview() {
   return (
     <div className="projects-preview">
       <div className="preview-title">
-        <h3>{t('项目目录')}</h3>
-        <span>{t('管理 Agent 可以使用的本地文件夹')}</span>
+        <h3>{t('文件夹')}</h3>
+        <span>{t('选择 Agent 能打开的文件夹。')}</span>
       </div>
       <div className="preview-list">
         <div className="preview-list-heading">
-          <span>{t('已添加目录')}</span>
+          <span>{t('我的文件夹')}</span>
           <span className="small-tag">3</span>
         </div>
         {projects.map((project) => (
@@ -175,7 +175,7 @@ function ProjectsPreview() {
       <div className="preview-access-note">
         <Icon name="shield" />
         <div>
-          <strong>{t('仅限项目目录')}</strong>
+          <strong>{t('仅限列表')}</strong>
           <p>{t('文件工具的访问范围，由你在本机决定。')}</p>
         </div>
         <Icon name="check" />
@@ -192,7 +192,7 @@ function ToolsPreview() {
     <div className="tools-preview">
       <div className="preview-title">
         <h3>{t('工具库')}</h3>
-        <span>{t('REST 与 MCP 共用的工具清单')}</span>
+        <span>{t('Agent 能用的所有工具')}</span>
       </div>
       <div className="preview-list">
         {capabilities.map((capability) => (
@@ -237,7 +237,7 @@ function ConnectionPreview() {
   return (
     <div className="connection-preview">
       <div className="preview-list">
-        <div className="preview-list-heading">{t('允许 Agent 使用什么')}</div>
+        <div className="preview-list-heading">{t('权限')}</div>
         {capabilities.map((capability) => (
           <div className="capability-preview-row" key={capability.key}>
             <Icon name={capability.icon} />
@@ -260,7 +260,7 @@ function ConnectionPreview() {
       </div>
       <div className="preview-list connection-info">
         <div className="preview-list-heading">
-          {t('接入你的 Agent')}
+          {t('连接 Agent')}
           <span className="small-tag">REST + MCP</span>
         </div>
         <div className="connection-content">
@@ -373,7 +373,7 @@ export function ConnectionExample() {
         <Icon name="link" width="16" height="16" />
         <span>
           {t(
-            '这里是占位示例。安装后，在 App「连接 → 公网」复制包含当前地址的完整 Prompt。Cue 和 WorkBuddy 网页版直接粘贴 Prompt；Gemini Spark 切换到 MCP，使用 App 提供的公网 MCP 地址配置连接。',
+            '这里是占位示例。安装后，在 App「设置 → 远程」复制包含当前地址的完整 Prompt。Cue 和 WorkBuddy 网页版直接粘贴 Prompt；Gemini Spark 切换到 MCP，使用 App 提供的公网 MCP 地址配置连接。',
           )}
         </span>
       </div>

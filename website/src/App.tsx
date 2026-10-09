@@ -17,7 +17,7 @@ const featuresData: { number: string; icon: IconName; title: string; body: strin
     icon: 'folder',
     title: '文件与终端，直接协作。',
     body: '读取项目、修改文件、搜索内容、运行命令。让 Agent 在你的工作环境里把事情做完。',
-    tags: ['项目目录', '实时命令输出'],
+    tags: ['文件夹', '实时命令输出'],
   },
   {
     number: '02',
@@ -31,7 +31,7 @@ const featuresData: { number: string; icon: IconName; title: string; body: strin
     icon: 'activity',
     title: '看见过程，也看见结果。',
     body: '每次调用的参数、输出、状态与耗时，都在同一个界面。展开详情，或沿时间线查看桌面历史画面。',
-    tags: ['执行日志', '桌面回放'],
+    tags: ['执行日志', '屏幕回放'],
   },
   {
     number: '04',
@@ -332,7 +332,7 @@ export default function App() {
                 <span className="step-number">2</span>
                 <div>
                   <h3>{t('开启一次性公网链接')}</h3>
-                  <p>{t('在「连接 → 接入你的 Agent」切换到「公网」，选择并开启「一次性链接」。')}</p>
+                  <p>{t('在「设置 → 连接 Agent」切换到「远程」，选择并开启「一次性链接」。')}</p>
                 </div>
               </li>
               <li>
