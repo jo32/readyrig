@@ -1,6 +1,5 @@
 {
-  "添加项目目录": "Add project folder",
-  "添加目录": "Add folder",
+  "添加文件夹": "Add Folder",
   "目录选择窗口已打开": "The folder picker is already open",
   "授权窗口已打开": "The authorization dialog is already open",
   "无法定位 Chrome 目录": "Cannot locate the Chrome folder",
@@ -9,7 +8,7 @@
   "授权读取": "Authorize access",
   "无法打开系统文件选择器": "Cannot open the system file picker",
   "请选择 Chrome 目录内的 DevToolsActivePort 文件": "Select DevToolsActivePort in the Chrome folder",
-  "macOS 仍拒绝读取调试入口。请检查系统设置 → 隐私与安全性中的 ReadyRig 数据访问权限，再重新检测。": "macOS still blocks access to the debugging file. Check ReadyRig's data access under “System Settings → Privacy & Security,” then detect again.",
+  "macOS 仍拒绝读取调试入口。请检查系统设置 → 隐私与安全性中的 ReadyRig 数据访问权限，再重新检测。": "macOS still blocks access to the debugging file. Check ReadyRig's data access under “System Settings → Privacy & Security,” then check again.",
   "ReadyRig · 本地 Agent 控制台": "ReadyRig · Local agent console",
   "ReadyRig · 快捷面板": "ReadyRig · Quick panel",
   "打开 ReadyRig": "Open ReadyRig",
@@ -19,7 +18,8 @@
   "已就绪": "Ready",
   "控制已暂停": "Control paused",
   "恢复控制": "Resume control",
-  "重启并更新": "Restart and update",
-  "检查更新": "Check for updates",
-  "无法保存语言偏好": "Cannot save language preference"
+  "重启更新": "Restart to Update",
+  "检查更新": "Check for Updates",
+  "无法保存语言偏好": "Cannot save language preference",
+  "导出": "Export"
 }

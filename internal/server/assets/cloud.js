@@ -24,9 +24,9 @@
   $('cloud-name').disabled=pairing||busy||renaming;
   $('cloud-login').classList.toggle('hidden',signed||pairing);$('cloud-login').disabled=busy;
   $('cloud-disconnect').classList.toggle('hidden',!signed&&!pairing&&cloud.state!=='error');$('cloud-disconnect').disabled=busy;
-  $('cloud-open').classList.toggle('hidden',!cloud.url||!signed&&!pairing);$('cloud-open').textContent=tr(pairing?'继续浏览器登录':'打开网页控制台');
-  $('cloud-code').textContent=cloud.code?tr('登录验证码')+' · '+cloud.code:'';
-  $('cloud-heartbeat').textContent=signed&&cloud.last_heartbeat&&!cloud.last_heartbeat.startsWith('0001')?tr('最近心跳')+' · '+new Date(cloud.last_heartbeat).toLocaleString(readyRigI18n.locale):'';
+  $('cloud-open').classList.toggle('hidden',!cloud.url||!signed&&!pairing);$('cloud-open').textContent=tr(pairing?'继续浏览器登录':'在线管理');
+  $('cloud-code').textContent=cloud.code?tr('核对码')+' · '+cloud.code:'';
+  $('cloud-heartbeat').textContent=signed&&cloud.last_heartbeat&&!cloud.last_heartbeat.startsWith('0001')?tr('最近在线')+' · '+new Date(cloud.last_heartbeat).toLocaleString(readyRigI18n.locale):'';
  }
  async function refreshCloud(){try{cloud=await api('/api/cloud');render()}catch(e){$('cloud-message').textContent=e.message}}
  $('cloud-login').onclick=async()=>{

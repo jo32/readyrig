@@ -101,7 +101,7 @@ test('localized connection prompts keep real URLs and tool routes',async()=>{
   const prompt=context.connectionPrompt(url,'local');
   for(const route of ['/api/v1/tools/help','/api/v1/tools/list_projects','/mcp'])assert.ok(prompt.includes(url+route));
   assert.ok(prompt.includes('Please connect to ReadyRig'));
-  assert.ok(prompt.includes('"Public"')||prompt.includes('“Public”'));
+  assert.ok(prompt.includes('"Anywhere"')||prompt.includes('“Anywhere”'));
   await language.setPreference('zh-CN');
   assert.ok(context.connectionPrompt(url,'local').includes('请连接我电脑上的 ReadyRig'));
 });

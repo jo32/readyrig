@@ -36,7 +36,7 @@ func Run(handler http.Handler, registry *harness.Registry, updates *update.Manag
 	var choosingDirectory atomic.Bool
 	exports := &exportManager{handler: handler, choose: func() (string, error) {
 		application.InvokeSync(showMain)
-		return app.Dialog.SaveFile().AttachToWindow(window).SetMessage(tr("导出日志")).SetFilename("readyrig-calls.ndjson").CanCreateDirectories(true).PromptForSingleSelection()
+		return app.Dialog.SaveFile().AttachToWindow(window).SetMessage(tr("导出")).SetFilename("readyrig-calls.ndjson").CanCreateDirectories(true).PromptForSingleSelection()
 	}}
 	defer exports.close()
 	// This endpoint only exists in the native webview, never in the public gateway.
@@ -60,7 +60,7 @@ func Run(handler http.Handler, registry *harness.Registry, updates *update.Manag
 			defer choosingDirectory.Store(false)
 			home, _ := os.UserHomeDir()
 			application.InvokeSync(showMain)
-			chosen, err := app.Dialog.OpenFile().AttachToWindow(window).SetTitle(tr("添加项目目录")).SetButtonText(tr("添加目录")).SetDirectory(home).CanChooseFiles(false).CanChooseDirectories(true).PromptForSingleSelection()
+			chosen, err := app.Dialog.OpenFile().AttachToWindow(window).SetTitle(tr("添加文件夹")).SetButtonText(tr("添加文件夹")).SetDirectory(home).CanChooseFiles(false).CanChooseDirectories(true).PromptForSingleSelection()
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": tr("无法打开系统文件选择器")})
@@ -184,7 +184,7 @@ func Run(handler http.Handler, registry *harness.Registry, updates *update.Manag
 	pauseItem := menu.Add(tr("暂停所有控制")).OnClick(func(*application.Context) { paused, _, _ := registry.Activity(); registry.SetPaused(!paused) })
 	menu.AddSeparator()
 	checkItem := menu.Add(tr("检查更新")).OnClick(func(*application.Context) { updates.Check(); showMain() })
-	restartItem := menu.Add(tr("重启并更新")).SetEnabled(false).OnClick(func(*application.Context) { _ = updates.RequestRestart() })
+	restartItem := menu.Add(tr("重启更新")).SetEnabled(false).OnClick(func(*application.Context) { _ = updates.RequestRestart() })
 	menu.AddSeparator()
 	quitItem := menu.Add(tr("退出 ReadyRig")).OnClick(func(*application.Context) { app.Quit() })
 	tray := app.SystemTray.New()
@@ -223,7 +223,7 @@ func Run(handler http.Handler, registry *harness.Registry, updates *update.Manag
 		} else {
 			pauseItem.SetLabel(tr("暂停所有控制"))
 		}
-		label = tr("重启并更新")
+		label = tr("重启更新")
 		if status := updates.Status(); status.CanRestart {
 			label += " · " + status.Latest
 		}
@@ -281,7 +281,7 @@ func Run(handler http.Handler, registry *harness.Registry, updates *update.Manag
 						pauseItem.SetLabel(map[bool]string{true: tr("恢复控制"), false: tr("暂停所有控制")}[paused])
 						checkItem.SetEnabled(status.CanCheck && status.State != "checking" && status.State != "downloading")
 						restartItem.SetEnabled(status.CanRestart)
-						text := tr("重启并更新")
+						text := tr("重启更新")
 						if status.CanRestart {
 							text += " · " + status.Latest
 						}

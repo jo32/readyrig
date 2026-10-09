@@ -116,7 +116,7 @@ test('the Safari card shows each state, and pause or a closed browser switch win
   assert.equal(permission.status, '需要授权');
   assert.equal(permission.diagnostic, 'Turn it on');
   assert.equal(permission.ready, false);
-  assert.equal(show({ state: 'unavailable', message: 'needs Safari 27' }).status, '需要配置');
+  assert.equal(show({ state: 'unavailable', message: 'needs Safari 27' }).status, '需要设置');
   assert.equal(show({ state: 'error', message: 'x' }).status, '连接失败');
   assert.equal(show({ state: 'ready', tools: 17 }, { paused: true }).status, '已暂停');
   const off = show({ state: 'ready', tools: 17 }, { enabled: { safari: false } });

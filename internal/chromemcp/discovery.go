@@ -86,7 +86,7 @@ func discover(ctx context.Context, opts Options) (target, error) {
 	return discoverAt(ctx, opts, bins, profiles)
 }
 
-var ErrDebugPermission = errors.New("Chrome 调试入口需要授权：macOS 阻止了读取 DevToolsActivePort。请在 ReadyRig 中点击「授权调试入口」选择该文件；若仍被拒绝，请检查系统设置「隐私与安全性」中的 ReadyRig 数据访问权限，然后重新检测。网页模式请为启动 ReadyRig 的终端授予相应权限。")
+var ErrDebugPermission = errors.New("Chrome 调试入口需要授权：macOS 阻止了读取 DevToolsActivePort。请在 ReadyRig 中点击「允许访问」选择该文件；若仍被拒绝，请检查系统设置「隐私与安全性」中的 ReadyRig 数据访问权限，然后重新检测。网页模式请为启动 ReadyRig 的终端授予相应权限。")
 
 func readDebugMarker(path string) ([]byte, error) {
 	f, err := os.Open(path)
