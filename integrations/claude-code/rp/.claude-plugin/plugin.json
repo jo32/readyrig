@@ -1,6 +1,6 @@
 {
   "name": "rp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "/rp lists ReadyRig projects by machine; the picked project is appended to your next prompt",
   "author": { "name": "jo32" },
   "types": "./types/index.d.ts"

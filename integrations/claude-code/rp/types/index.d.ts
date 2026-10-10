@@ -22,6 +22,7 @@ declare module 'claude-code' {
       isLoading: boolean
       error: string | null
       pick: RpPick | null
+      query: string
     }
   }
 }

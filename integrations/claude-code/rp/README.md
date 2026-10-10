@@ -45,7 +45,7 @@ claude --plugin-dir /path/to/readyrig/integrations/claude-code/rp
 
 | Command | What it does |
 | --- | --- |
-| `/rp` | Opens a pane with every machine and its projects. Move with Tab or the arrow keys, press Enter on a project to pick it, or Esc to close the pane. |
+| `/rp` | Opens a pane with every machine and its projects, and a search box at the top. Type to narrow the list, then press Enter to pick the first match. Or move with Tab or the arrow keys, press Enter on a project to pick it, or Esc to close the pane. |
 | `/rp clear` | Drops a project you picked but have not used yet. |
 
 After you pick a project:
@@ -58,6 +58,8 @@ After you pick a project:
   ```
 
 - It is added once, then cleared. Slash commands are left alone, so `/rp` again or any other command does not use it up.
+
+The search matches project names, paths and machine names, ignoring case. With several words, a project must match all of them (`mac tvbox`). Machines with no match are hidden while you search.
 
 The pane lines up project names in one column. When the pane is too narrow for the name and path side by side, each path goes on its own indented line under the name.
 

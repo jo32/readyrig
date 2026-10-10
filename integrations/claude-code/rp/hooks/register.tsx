@@ -8,6 +8,7 @@ const machines = atom({ plugin: 'rp', key: 'machines' } as const, [])
 const isLoading = atom({ plugin: 'rp', key: 'isLoading' } as const, false)
 const error = atom({ plugin: 'rp', key: 'error' } as const, null)
 const pick = atom({ plugin: 'rp', key: 'pick' } as const, null)
+const query = atom({ plugin: 'rp', key: 'query' } as const, '')
 
 // The ReadyRig MCP tools answer JSON text; pull the object out of it.
 function parseJson(text: string | undefined): any {
@@ -67,6 +68,22 @@ async function load($: EngineInterface) {
   await update($, isLoading, () => false)
 }
 
+// Every word of the search must appear in the project's name or path, or in
+// its machine's name. With a search, machines left without a match are hidden.
+function filterMachines(list: RpMachine[], text: string): RpMachine[] {
+  const words = text.toLowerCase().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return list
+  return list
+    .map(m => ({
+      ...m,
+      projects: m.projects.filter(p => {
+        const hay = `${p.name} ${p.path} ${m.name}`.toLowerCase()
+        return words.every(w => hay.includes(w))
+      }),
+    }))
+    .filter(m => m.projects.length > 0)
+}
+
 // The folder's path stays out of the prompt: it can name the user, and the
 // project argument is all the tools need. Relative paths resolve inside it.
 function contextFor(p: RpPick): string {
@@ -102,6 +119,7 @@ export const register: Register = on => {
       return { text: 'ReadyRig project cleared.' }
     }
 
+    await update($, query, () => '')
     await $.ui.open({
       id: PANE,
       title: 'ReadyRig projects',
@@ -125,11 +143,16 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    // The mobile app draws no text field yet: it shows the whole list.
+    const Input = 'Input' in elements ? elements.Input : null
     const list = await read($, machines)
     const loading = await read($, isLoading)
     const failed = await read($, error)
     const current = await read($, pick)
+    const search = await read($, query)
+    const shown = filterMachines(list, search)
 
     const choose = async (m: RpMachine, project: RpProject) => {
       const p: RpPick = { machineId: m.id, machineName: m.name, project }
@@ -139,6 +162,13 @@ export const register: Register = on => {
       await $.ui.close({ id: PANE })
     }
 
+    // Enter in the search box picks the first project that matches.
+    const chooseFirst = async (text: string) => {
+      const m = filterMachines(await read($, machines), text)[0]
+      const p = m?.projects[0]
+      if (m && p) await choose(m, p)
+    }
+
     // One name column for every machine, so the paths line up.
     const nameWidth = Math.max(0, ...list.flatMap(m => m.projects.map(p => p.name.length)))
     // Too narrow for name and path side by side: put the path on its own line.
@@ -146,12 +176,29 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {Input && (
+          <Box marginBottom={1}>
+            <Input
+              key="search"
+              label="Search: "
+              placeholder="project, path or machine"
+              value={search}
+              submitLabel="pick first"
+              autoFocus
+              onInput={value => update($, query, () => value)}
+              onSubmit={value => chooseFirst(value)}
+            />
+          </Box>
+        )}
         {loading && <Text dimColor>Loading ReadyRig machines…</Text>}
         {failed && <Text color="red">Could not list machines: {failed}</Text>}
         {!loading && !failed && list.length === 0 && (
           <Text dimColor>No ReadyRig machines found.</Text>
         )}
-        {list.map(m => (
+        {!loading && list.length > 0 && shown.length === 0 && (
+          <Text dimColor>No projects match "{search}".</Text>
+        )}
+        {shown.map(m => (
           <Box key={`m-${m.id}`} flexDirection="column" marginBottom={1}>
             <Text bold>
               {m.name} <Text dimColor>({m.platform}{m.online ? '' : ', offline'})</Text>
