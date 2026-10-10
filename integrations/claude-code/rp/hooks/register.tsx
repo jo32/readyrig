@@ -17,6 +17,7 @@ const isLoading = atom({ plugin: 'rp', key: 'isLoading' } as const, false)
 const error = atom({ plugin: 'rp', key: 'error' } as const, null)
 const attached = atom({ plugin: 'rp', key: 'attached' } as const, null)
 const progress = atom({ plugin: 'rp', key: 'progress' } as const, null)
+const needsNote = atom({ plugin: 'rp', key: 'needsNote' } as const, false)
 const query = atom({ plugin: 'rp', key: 'query' } as const, '')
 
 // The AGENTS.md standard (agents.md) and the universal skills folder first,
@@ -298,18 +299,6 @@ async function appendNote($: EngineInterface, text: string) {
   if (out.deny) throw new Error(out.deny)
 }
 
-// Whether the conversation still holds this attachment's note, the latest
-// rp note of all. A compaction or /clear can drop it.
-function hasNote(rows: readonly { role: string; text: string }[], a: RpAttached): boolean {
-  for (const row of [...rows].reverse()) {
-    if (row.role !== 'user') continue
-    if (row.text.includes('[rp:attached ') || row.text.includes('[rp:detached ')) {
-      return row.text.includes(markerOf('attached', a))
-    }
-  }
-  return false
-}
-
 function summary(a: Pick<RpAttached, 'instructionFiles' | 'skills'>): string {
   return [...a.instructionFiles, plural(a.skills.length, 'skill')].join(' · ')
 }
@@ -350,6 +339,7 @@ async function attach($: EngineInterface, p: RpPick) {
 
     const a: RpAttached = { ...p, instructionFiles: instructions.map(f => f.path), skills, note }
     await update($, attached, () => a)
+    await update($, needsNote, () => false)
     await update($, progress, () => null)
     showStatus($, a)
     await $.ui.close({ id: PANE })
@@ -366,6 +356,7 @@ async function detach($: EngineInterface): Promise<string> {
   const a = await read($, attached)
   if (!a) return 'No ReadyRig project is attached.'
   await update($, attached, () => null)
+  await update($, needsNote, () => false)
   showStatus($, null)
   await appendNote($, detachNote(a))
   return `Detached ${a.project.name} @ ${a.machineName}.`
@@ -412,12 +403,26 @@ export const register: Register = on => {
   })
 
   // The note is appended once, at the end of the conversation, so the cached
-  // prompt before it stays valid. Put it back if a compaction or /clear lost it.
+  // prompt before it stays valid. A compaction of the main conversation or a
+  // /clear drops it: the next prompt puts it back.
+  on('session.compact', async ($, e, next) => {
+    const out = await next(e)
+    if (!e.agentId && e.trigger !== 'precompute' && out.messages) {
+      await update($, needsNote, () => true)
+    }
+    return out
+  })
+
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') await update($, needsNote, () => true)
+    return next(e)
+  })
+
   on('prompt.submit', async ($, e, next) => {
     const a = await read($, attached)
-    if (a && !e.text.trimStart().startsWith('/')) {
-      const rows = await $.session.messages()
-      if (Array.isArray(rows) && !hasNote(rows, a)) await appendNote($, a.note)
+    if (a && (await read($, needsNote)) && !e.text.trimStart().startsWith('/')) {
+      await appendNote($, a.note)
+      await update($, needsNote, () => false)
     }
     return next(e)
   }).catch(($, e, next) => next(e))

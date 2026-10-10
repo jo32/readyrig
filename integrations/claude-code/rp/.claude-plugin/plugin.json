@@ -1,6 +1,6 @@
 {
   "name": "rp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "/rp attaches a ReadyRig project to the session: its AGENTS.md, CLAUDE.md and skills, until /rp detach",
   "author": { "name": "jo32" },
   "types": "./types/index.d.ts"

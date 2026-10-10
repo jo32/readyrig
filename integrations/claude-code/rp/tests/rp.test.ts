@@ -48,6 +48,8 @@ const PANE = {
 const RUN_RP = { command: 'rp', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as any
 const RUN_DETACH = { ...RUN_RP, args: 'detach' }
 
+const SUMMARY = { role: 'user', text: 'The conversation so far, summarized.', toolUses: [] }
+
 function answer(body: unknown, isError = false) {
   const text = JSON.stringify(body)
   return { result: [{ type: 'text', text }], text, ...(isError ? { isError: true } : {}) } as any
@@ -57,7 +59,7 @@ function answer(body: unknown, isError = false) {
 // `gate` holds back AGENTS.md reads until it resolves.
 function fakeWorld(on: any, gate?: Promise<void>) {
   const session = mock.session(on)
-  const world = { sent: [] as string[], keepFrom: 0, notes: () => session.appended().map(r => textOf(r)) }
+  const world = { sent: [] as string[], notes: () => session.appended().map(r => textOf(r)) }
   on('tool.call', async ($: any, e: any) => {
     if (String(e.tool).endsWith('list_computers')) return answer(COMPUTERS)
     const args = e.arguments ?? {}
@@ -74,10 +76,8 @@ function fakeWorld(on: any, gate?: Promise<void>) {
   })
   on('ui.open', () => ({ value: undefined }) as any)
   on('ui.close', () => ({ value: undefined }) as any)
-  // What the model would read: the appended rows from `keepFrom` on (a compaction drops the rest).
-  on('session.messages', () => ({
-    value: world.notes().slice(world.keepFrom).map(text => ({ role: 'user', text, toolUses: [] })),
-  }) as any)
+  on('session.compact', () => ({ messages: [SUMMARY] }) as any)
+  on('session.end', ($: any, e: any) => ({ sessionId: e.sessionId }) as any)
   on('prompt.submit', ($: any, e: any) => {
     world.sent.push(e.text)
     return { text: e.text }
@@ -165,20 +165,33 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('the note comes back after a compaction drops it', async ($, on) => {
+const compact = ($: any, extra: object = {}) =>
+  $.session.compact({ trigger: 'manual', messages: [SUMMARY], ...extra } as any)
+
+test('the note comes back once after a compaction or /clear drops it', async ($, on) => {
   const world = fakeWorld(on)
   await $.command.run(RUN_RP)
   const ui = await $.ui.mount({ plugin: 'rp', surface: 'terminal', component: 'Pane', requestId: 'rp', props: PANE })
   await ui.press({ key: 'b-mac-p1' })
 
-  world.keepFrom = world.notes().length
+  // A subagent's compaction and a precompute leave the main conversation as it is.
+  await compact($, { agentId: 'a1' })
+  await compact($, { trigger: 'precompute' })
+  await submit($, 'before compaction')
+  expect(world.notes()).toHaveLength(1)
+
+  await compact($)
   await submit($, 'after compaction')
   await submit($, 'and again')
+  expect(world.notes()).toHaveLength(2)
+  expect(world.notes()[1]).toBe(world.notes()[0])
 
-  const notes = world.notes()
-  expect(notes).toHaveLength(2)
-  expect(notes[1]).toBe(notes[0])
-  expect(world.sent).toEqual(['after compaction', 'and again'])
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } } as any)
+  await submit($, '/help')
+  expect(world.notes()).toHaveLength(2)
+  await submit($, 'after clear')
+  expect(world.notes()).toHaveLength(3)
+  expect(world.sent).toEqual(['before compaction', 'after compaction', 'and again', '/help', 'after clear'])
 })
 
 test('/rp detach tells the model and stops the note', async ($, on) => {
@@ -194,7 +207,7 @@ test('/rp detach tells the model and stops the note', async ($, on) => {
   expect(notes).toHaveLength(2)
   expect(notes[1]).toContain('[rp:detached mac/p1]')
 
-  world.keepFrom = notes.length
+  await compact($)
   await submit($, 'unrelated work')
   expect(world.notes()).toHaveLength(2)
 })

@@ -47,6 +47,8 @@ declare module 'claude-code' {
       isLoading: boolean
       error: string | null
       attached: RpAttached | null
+      // The conversation lost the attached project's note (a compaction, /clear).
+      needsNote: boolean
       progress: RpProgress | null
       query: string
     }
