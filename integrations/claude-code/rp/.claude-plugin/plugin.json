@@ -1,7 +1,7 @@
 {
   "name": "rp",
-  "version": "0.2.0",
-  "description": "/rp lists ReadyRig projects by machine; the picked project is appended to your next prompt",
+  "version": "0.3.0",
+  "description": "/rp attaches a ReadyRig project to the session: its AGENTS.md, CLAUDE.md and skills, until /rp detach",
   "author": { "name": "jo32" },
   "types": "./types/index.d.ts"
 }

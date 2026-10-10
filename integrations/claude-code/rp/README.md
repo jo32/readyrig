@@ -1,6 +1,6 @@
-# rp: pick a ReadyRig project from Claude Code
+# rp: attach a ReadyRig project to Claude Code
 
-`rp` is a Claude Code mod (a plugin of function hooks). It adds a `/rp` command that lists the approved projects on every ReadyRig computer, grouped by machine. The project you pick is added to your next prompt, so Claude knows which computer and folder to work in.
+`rp` is a Claude Code mod (a plugin of function hooks). It adds a `/rp` command that lists the approved projects on every ReadyRig computer, grouped by machine. The project you pick is attached to the session: Claude gets its `AGENTS.md`, `CLAUDE.md` and skills, and works in it until you detach it.
 
 ```
 jiangdailins-MacBook-Pro.local (darwin)
@@ -45,19 +45,30 @@ claude --plugin-dir /path/to/readyrig/integrations/claude-code/rp
 
 | Command | What it does |
 | --- | --- |
-| `/rp` | Opens a pane with every machine and its projects, and a search box at the top. Type to narrow the list, then press Enter to pick the first match. Or move with Tab or the arrow keys, press Enter on a project to pick it, or Esc to close the pane. |
-| `/rp clear` | Drops a project you picked but have not used yet. |
+| `/rp` | Opens a pane with every machine and its projects, and a search box at the top. Type to narrow the list, then press Enter to attach the first match. Or move with Tab or the arrow keys, press Enter on a project to attach it, or Esc to close the pane. |
+| `/rp detach` | Detaches the project (`/rp clear` does the same). The pane also has a `detach` button while a project is attached. |
 
-After you pick a project:
+When you pick a project, the pane shows each step as it runs:
 
-- A toast confirms it, and the status line shows `rp: <project> @ <machine>`.
-- The next prompt you send gets one line added at the end:
+```
+Attaching OpenWorkBuddy2 @ jiangdailins-MacBook-Pro.local
 
-  ```
-  [ReadyRig project: "computer-use-server" on machine "jiangdailins-MacBook-Pro.local" (computer_id: 0WNo…). Use this machine for this request: pass project: "a3e4…" to its tools and use paths relative to the project.]
-  ```
+  ✓ AGENTS.md                43 lines
+  – CLAUDE.md                none
+  … .agents/skills           reading 3 skills
+  – .claude/skills           none
+  · Add to the conversation
+```
 
-- It is added once, then cleared. Slash commands are left alone, so `/rp` again or any other command does not use it up.
+The status line counts the steps too, so you can close the pane with Esc and keep working while it loads. When it is done, the pane closes, a toast says what was found, and the status line shows `rp: <project> @ <machine> · AGENTS.md · 3 skills` for as long as the project stays attached.
+
+What Claude gets:
+
+- **Where to work**: the machine's `computer_id` and the project id to pass to the ReadyRig tools. The folder's path is left out, since it can include your user name.
+- **Instructions**: `AGENTS.md` (the [agents.md](https://agents.md) standard) and `CLAUDE.md` from the project's root, each in full up to 40,000 characters. A `CLAUDE.md` that only says `@AGENTS.md` is skipped. Claude is also told to look for an `AGENTS.md` or `CLAUDE.md` in subfolders, where the nearest one wins.
+- **Skills**: each `SKILL.md` in `.agents/skills/` (the universal location) and `.claude/skills/`, including linked folders. Only the name and description from each skill's front matter go in. Claude reads the whole `SKILL.md` when a task matches. If both folders have a skill with the same name, the one in `.agents/skills/` wins.
+
+All of this goes in once, as a hidden note at the end of the conversation. It doesn't go into the system prompt, so attaching or detaching doesn't invalidate the prompt cache for the conversation so far. Your prompts are sent as you typed them. If `/compact` or `/clear` drops the note, it is added again before your next prompt. Attaching another project replaces the first one. Detaching adds a short note that tells Claude the project no longer applies.
 
 The search matches project names, paths and machine names, ignoring case. With several words, a project must match all of them (`mac tvbox`). Machines with no match are hidden while you search.
 
@@ -65,15 +76,15 @@ The pane lines up project names in one column. When the pane is too narrow for t
 
 ## How it works
 
-`/rp` calls the ReadyRig MCP tools through Claude Code, the same way Claude would: `list_computers`, then `list_projects` on each online computer through `call_computer_tool`. These calls go through Claude Code's normal permission checks, so you may be asked to allow them the first time.
+`/rp` calls the ReadyRig MCP tools through Claude Code, the same way Claude would: `list_computers`, then `list_projects` on each online computer through `call_computer_tool`. Attaching uses `read_file` and `list_directory` on the project. These calls go through Claude Code's normal permission checks, so you may be asked to allow them the first time.
 
 | File | Purpose |
 | --- | --- |
 | `.claude-plugin/plugin.json` | Manifest |
 | `hooks/hooks.json` | Points Claude Code at the hooks module |
-| `hooks/register.tsx` | The `/rp` command, the pane, and the prompt hook |
+| `hooks/register.tsx` | The `/rp` command, the pane, attaching and detaching, and the prompt hook that restores the note |
 | `types/index.d.ts` | Types for the values the mod keeps in session state |
-| `tests/rp.test.ts` | Picks a project with fake ReadyRig answers and checks the next prompt |
+| `tests/rp.test.ts` | Attaches projects using fake ReadyRig answers, then checks the note, the progress steps, search, re-adding the note after compaction, and detach |
 
 ## Develop
 

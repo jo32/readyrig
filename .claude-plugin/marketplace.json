@@ -8,7 +8,7 @@
     {
       "name": "rp",
       "source": "./integrations/claude-code/rp",
-      "description": "/rp lists ReadyRig projects by machine; the picked project is appended to your next prompt"
+      "description": "/rp attaches a ReadyRig project to the session: its AGENTS.md, CLAUDE.md and skills, until /rp detach"
     }
   ]
 }
