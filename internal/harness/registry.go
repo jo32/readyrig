@@ -421,6 +421,13 @@ func deriveLabel(tool string, m map[string]any) string {
 		return "write " + s("path")
 	case "edit_file":
 		return "edit " + s("path")
+	case "receive_file":
+		if m["cancel"] == true {
+			return "stop receiving " + s("path")
+		}
+		return "receive " + s("path")
+	case "send_file":
+		return "send " + s("path")
 	case "write_stdin":
 		switch {
 		case m["terminate"] == true:

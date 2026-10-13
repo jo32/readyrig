@@ -37,16 +37,18 @@ import (
 var assets embed.FS
 
 type Server struct {
-	Registry                                  *harness.Registry
-	Projects                                  *harness.Projects
-	Privacy                                   *harness.Privacy
-	Store                                     *store.Store
-	Computer                                  *computer.Computer
-	Chrome                                    *chromemcp.Bridge
-	Safari                                    *chromemcp.SafariBridge
-	Updates                                   *update.Manager
-	Tunnel                                    *tunnel.Manager
-	Cloud                                     *cloud.Client
+	Registry *harness.Registry
+	Projects *harness.Projects
+	Privacy  *harness.Privacy
+	Store    *store.Store
+	Computer *computer.Computer
+	Chrome   *chromemcp.Bridge
+	Safari   *chromemcp.SafariBridge
+	Updates  *update.Manager
+	Tunnel   *tunnel.Manager
+	Cloud    *cloud.Client
+	// Transfers receives files; relay uploads reach it through Cloud.
+	Transfers                                 *harness.Transfers
 	CLI                                       *cliinstall.Status
 	LocalCLI                                  *LocalCLI
 	SaveCapability                            func(string, bool) error

@@ -442,3 +442,46 @@ func TestRelayConnectsOnlyWhileTheTunnelIsNotWorking(t *testing.T) {
 	hub.accept(t)
 	waitRelay(t, c, "connected")
 }
+
+func TestRelayDeliversUploadFrames(t *testing.T) {
+	hub := newTestHub(t)
+	uploads := make(chan Upload, 4)
+	c, _ := boundClient(t, hub, Options{Relay: func(context.Context, RelayCall) RelayReply {
+		t.Error("an upload reached the tools")
+		return RelayReply{Status: 500}
+	}, Upload: func(_ context.Context, up Upload) RelayReply {
+		uploads <- up
+		return RelayReply{Status: 204, Body: json.RawMessage(`{"header":{"Upload-Offset":"3"},"text":""}`)}
+	}})
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetRelay(true); err != nil {
+		t.Fatal(err)
+	}
+	conn := hub.accept(t)
+	waitRelay(t, c, "connected")
+	send(t, conn, relayFrame{Type: "upload", ID: "u1", Method: "PATCH", Token: "tok", Header: map[string]string{"Upload-Offset": "0"}, Data: []byte("abc")})
+	got := <-uploads
+	if got.Method != "PATCH" || got.Token != "tok" || got.Header["Upload-Offset"] != "0" || string(got.Body) != "abc" {
+		t.Fatalf("%+v", got)
+	}
+	if reply := result(t, conn); reply.ID != "u1" || reply.HTTPStatus != 204 || !strings.Contains(string(reply.Body), `"Upload-Offset":"3"`) {
+		t.Fatalf("%+v %s", reply, reply.Body)
+	}
+	// Without an upload handler, uploads are refused rather than run as tool calls.
+	hub2 := newTestHub(t)
+	c2, _ := boundClient(t, hub2, Options{Relay: func(context.Context, RelayCall) RelayReply { return RelayReply{Status: 200} }})
+	if err := c2.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c2.SetRelay(true); err != nil {
+		t.Fatal(err)
+	}
+	conn2 := hub2.accept(t)
+	waitRelay(t, c2, "connected")
+	send(t, conn2, relayFrame{Type: "upload", ID: "u2", Method: "HEAD", Token: "tok"})
+	if reply := result(t, conn2); reply.ID != "u2" || reply.HTTPStatus != 404 {
+		t.Fatalf("%+v", reply)
+	}
+}

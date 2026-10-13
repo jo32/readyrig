@@ -326,6 +326,8 @@ REST, MCP, OpenAPI, and the console share one tool registry.
 | `list_directory` | Entries with depth, glob filter, sorting; skips ignored paths when recursing | Concurrent |
 | `glob` | Find files by glob pattern | Concurrent |
 | `search_files` | Literal or regex search with context, `include` globs, and paging | Concurrent |
+| `receive_file` | Advanced: a temporary upload address for one file (up to 1 GiB), resumable | Concurrent |
+| `send_file` | Advanced: uploads a local file to a `receive_file` address, resuming and retrying | Concurrent |
 | `exec_command` | Commands with cwd, environment, login shell, background mode, and head-and-tail output | Concurrent |
 | `write_stdin` | Input, polling (optionally a long poll for new output), stdin closure, and process termination | Concurrent |
 | `list_tasks` | This session's command sessions: elapsed time, output size, time since last output, exit code; can wait for one or all running jobs | Concurrent |
@@ -357,6 +359,18 @@ Use `{"name":"exec_command"}` to inspect one tool even when disabled, or `{"incl
 - `edit_file` replaces `old_string` with `new_string` and fails unless it matches exactly once; `replace_all` replaces every match. It keeps file permissions and CRLF line endings and returns the first changed line with a numbered snippet. `write_file` keeps the permissions of an existing file, creates new files as 0644, and refuses to overwrite with `create_only`.
 - `list_directory` accepts `depth` (up to 8), `pattern`, `type`, `sort` (`name`, `modified`, `size`), and `limit`. `glob` finds files by pattern such as `**/*.go` or `*.{md,txt}`. When they recurse, both skip `.git`, `node_modules`, and paths excluded by `.gitignore` files (nested files and negation included) unless `no_ignore` is set.
 - `search_files` is literal by default. `regex` selects RE2 expressions; `case_insensitive`, `include`, `context` (0-5 lines), and `output: "files"` refine it. At most `max_results` matches are returned; a truncated result carries `next_offset` to pass back as `offset`.
+
+### Sending files between computers
+
+`receive_file` and `send_file` (both in the `advanced` group) move a file from one computer to another without passing it through the agent:
+
+1. On the receiving computer, `receive_file` with `path` and the exact `size` (optionally `sha256`) returns an `upload_url`. The call keeps running in the background until the file arrives. With `via: "tunnel"` the address is a temporary quick tunnel from that computer (up to 1 GiB; the bytes never touch ReadyRig Cloud). With `via: "relay"` it is `https://<cloud>/u/<computer>/<token>` and the cloud forwards the upload over the computer's relay connection in 1 MiB frames (up to 100 MB; the bytes pass through ReadyRig Cloud in memory and are not stored), so no `cloudflared` runs on that computer. The default is `relay` while relay mode is connected, `tunnel` otherwise.
+2. On the sending computer, `send_file` with `path` and that `upload_url` uploads the file in pieces of up to 32 MiB. It continues in the background after `yield_time_ms` and notifies when done.
+3. The receiver writes to a hidden `.<name>.readyrig-part` file next to the destination, checks the SHA-256 (the one given to `receive_file`, and the one `send_file` computes), and only then renames it into place. A file that fails the check is discarded.
+
+All open tunnel addresses share one listener and one quick tunnel, separate from public sharing. An address closes when its file arrives, after 15 minutes without requests, after 2 hours, on `DELETE`, or with `receive_file` `cancel: true` (which discards the partial file); pausing control or turning off file access closes it too. The tunnel closes 5 minutes after the last address. Interrupted uploads resume: call `receive_file` again with the same path and size to get the current address (a new one if the tunnel was replaced) while keeping what arrived, then `send_file` again. Partial files nobody touches for a day are removed the next time something is received into that folder.
+
+Any HTTP client can upload too. `HEAD` returns `Upload-Offset` and `Upload-Length`; `PATCH` with an `Upload-Offset` header writes from there (resending an earlier offset replaces what follows, a later one gets `409` with the real offset); the last piece may carry `Upload-SHA256`; `DELETE` cancels. Each address accepts exactly one file and its 256-bit token is the only credential, so share it only with the sender. `send_file` uploads only to `https://*.trycloudflare.com/<token>` and `https://<cloud>/u/<computer>/<token>` addresses.
 
 ### Batching
 

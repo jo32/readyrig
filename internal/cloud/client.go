@@ -67,6 +67,9 @@ type Options struct {
 	// Relay runs one tool call received over the opt-in relay socket. Without it the
 	// relay answers every call with an error.
 	Relay func(context.Context, RelayCall) RelayReply
+	// Upload delivers one receive_file request forwarded over the relay. Without it
+	// such requests are refused.
+	Upload func(context.Context, Upload) RelayReply
 	// TunnelReady reports whether public sharing has a working link. The relay stays on
 	// standby, without a connection, while it does.
 	TunnelReady func() bool

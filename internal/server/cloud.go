@@ -7,12 +7,27 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 func (s *Server) StartCloud(baseURL string) error {
-	s.Cloud = cloud.New(cloud.Options{Dir: filepath.Join(s.Store.Dir, "cloud"), URL: baseURL, Changed: s.Registry.Signal, RedactSecrets: s.Registry.AddSecrets, Snapshot: s.cloudSnapshot, Execute: s.executeCloudCommand, Relay: s.relayCall, TunnelReady: s.tunnelReady})
+	s.Cloud = cloud.New(cloud.Options{Dir: filepath.Join(s.Store.Dir, "cloud"), URL: baseURL, Changed: s.Registry.Signal, RedactSecrets: s.Registry.AddSecrets, Snapshot: s.cloudSnapshot, Execute: s.executeCloudCommand, Relay: s.relayCall, Upload: s.relayUpload, TunnelReady: s.tunnelReady})
+	if s.Transfers != nil {
+		if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+			s.Transfers.RelayHosts = append(s.Transfers.RelayHosts, u.Host)
+		}
+		c := s.Cloud
+		s.Transfers.RelayBase = func() string {
+			st := c.Status()
+			if c.Relay().State != "connected" || st.DeviceID == "" || st.URL == "" {
+				return ""
+			}
+			return strings.TrimRight(st.URL, "/") + "/u/" + st.DeviceID
+		}
+	}
 	return s.Cloud.Start()
 }
 func (s *Server) cloudSnapshot() any {
@@ -49,6 +64,22 @@ func (s *Server) relayCall(ctx context.Context, call cloud.RelayCall) cloud.Rela
 	if err != nil {
 		return cloud.RelayReply{Status: http.StatusInternalServerError, Body: json.RawMessage(`{"error":"result could not be encoded","status":"error"}`)}
 	}
+	return cloud.RelayReply{Status: status, Body: data}
+}
+
+// relayUpload delivers a receive_file request that the cloud forwarded over the relay.
+func (s *Server) relayUpload(ctx context.Context, up cloud.Upload) cloud.RelayReply {
+	status, header, text := http.StatusNotFound, http.Header{}, []byte(nil)
+	if s.Transfers != nil {
+		status, header, text = s.Transfers.Relayed(ctx, up.Method, up.Token, up.Header, up.Body)
+	}
+	keep := map[string]string{}
+	for _, k := range []string{"Upload-Offset", "Upload-Length", "Upload-Complete", "Content-Type", "Allow"} {
+		if v := header.Get(k); v != "" {
+			keep[k] = v
+		}
+	}
+	data, _ := json.Marshal(map[string]any{"header": keep, "text": string(text)})
 	return cloud.RelayReply{Status: status, Body: data}
 }
 func (s *Server) executeCloudCommand(cmd cloud.Command) error {

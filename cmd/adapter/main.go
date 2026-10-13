@@ -6,6 +6,7 @@ import (
 	"computer-use-server/internal/chromemcp"
 	"computer-use-server/internal/cliinstall"
 	"computer-use-server/internal/desktop"
+	"computer-use-server/internal/harness"
 	"computer-use-server/internal/server"
 	"computer-use-server/internal/tunnel"
 	"computer-use-server/internal/update"
@@ -202,6 +203,9 @@ func run() (runErr error) {
 	a.Server.Updates = updates
 	if opts.Cloudflared != "" {
 		a.Server.Tunnel = tunnel.New(tunnel.Options{Dir: filepath.Join(a.Server.Store.Dir, "cloudflared"), Command: opts.Cloudflared, Changed: a.Server.Registry.Signal, RedactSecrets: a.Server.Registry.AddSecrets})
+		a.Transfers.NewTunnel = func() harness.PublicTunnel {
+			return tunnel.New(tunnel.Options{Dir: filepath.Join(a.Server.Store.Dir, "cloudflared"), Command: opts.Cloudflared, Changed: a.Server.Registry.Signal})
+		}
 	}
 	a.Server.Projects.SetFullAccess(opts.FullAccess)
 	for category, enabled := range map[string]bool{"files": !opts.NoFiles, "terminal": opts.Shell, "computer": opts.Computer, "browser": !opts.NoChrome, "safari": !opts.NoSafari} {

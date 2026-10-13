@@ -69,6 +69,15 @@ type RelayCall struct {
 	Arguments json.RawMessage
 }
 
+// Upload is one request to a receive_file address that the cloud forwards over the
+// relay, for a computer that receives files without a tunnel.
+type Upload struct {
+	Method string
+	Token  string
+	Header map[string]string
+	Body   []byte
+}
+
 // RelayReply is the HTTP-shaped response of the local tool gateway.
 type RelayReply struct {
 	Status int
@@ -88,6 +97,11 @@ type relayFrame struct {
 	Arguments  json.RawMessage `json:"arguments,omitempty"`
 	HTTPStatus int             `json:"http_status,omitempty"`
 	Body       json.RawMessage `json:"body,omitempty"`
+	// Upload frames.
+	Method string            `json:"method,omitempty"`
+	Token  string            `json:"token,omitempty"`
+	Header map[string]string `json:"header,omitempty"`
+	Data   []byte            `json:"data,omitempty"`
 }
 
 func (c *Client) loadRelay() {
@@ -365,13 +379,25 @@ func (c *Client) relaySession(ctx context.Context, creds credentials) error {
 				stop()
 			}
 			mu.Unlock()
-		case "call":
+		case "call", "upload":
 			if frame.ID == "" || len(frame.ID) > 64 {
 				continue
 			}
-			if disabled || !relayToolName.MatchString(frame.Tool) || len(frame.Session) > 128 || len(frame.Client) > 128 {
-				fail(frame.ID, http.StatusBadRequest, "invalid relay call")
-				continue
+			var run func(context.Context) RelayReply
+			if frame.Type == "upload" {
+				if c.opts.Upload == nil {
+					fail(frame.ID, http.StatusNotFound, "this computer does not receive files over the relay")
+					continue
+				}
+				up := Upload{Method: frame.Method, Token: frame.Token, Header: frame.Header, Body: frame.Data}
+				run = func(ctx context.Context) RelayReply { return c.opts.Upload(ctx, up) }
+			} else {
+				if disabled || !relayToolName.MatchString(frame.Tool) || len(frame.Session) > 128 || len(frame.Client) > 128 {
+					fail(frame.ID, http.StatusBadRequest, "invalid relay call")
+					continue
+				}
+				call := RelayCall{Tool: frame.Tool, Session: frame.Session, Client: frame.Client, Arguments: frame.Arguments}
+				run = func(ctx context.Context) RelayReply { return c.opts.Relay(ctx, call) }
 			}
 			select {
 			case slots <- struct{}{}:
@@ -384,21 +410,21 @@ func (c *Client) relaySession(ctx context.Context, creds credentials) error {
 			calls[frame.ID] = stop
 			mu.Unlock()
 			wg.Add(1)
-			go func(f relayFrame) {
+			go func(id string) {
 				defer wg.Done()
 				defer func() {
 					stop()
 					mu.Lock()
-					delete(calls, f.ID)
+					delete(calls, id)
 					mu.Unlock()
 					<-slots
 				}()
-				out := c.opts.Relay(callCtx, RelayCall{Tool: f.Tool, Session: f.Session, Client: f.Client, Arguments: f.Arguments})
+				out := run(callCtx)
 				if callCtx.Err() != nil {
 					return // cancelled or disconnected: nobody is waiting for the result
 				}
-				reply(f.ID, out.Status, out.Body)
-			}(frame)
+				reply(id, out.Status, out.Body)
+			}(frame.ID)
 		}
 	}
 }

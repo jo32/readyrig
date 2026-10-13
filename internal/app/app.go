@@ -1,6 +1,7 @@
 package app
 
 import (
+	"computer-use-server/internal/buildinfo"
 	"computer-use-server/internal/chromemcp"
 	"computer-use-server/internal/computer"
 	"computer-use-server/internal/harness"
@@ -8,6 +9,7 @@ import (
 	"computer-use-server/internal/store"
 	"computer-use-server/internal/tunnel"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 )
@@ -17,6 +19,7 @@ type App struct {
 	Server    *server.Server
 	Processes *harness.Processes
 	Files     *harness.Files
+	Transfers *harness.Transfers
 	Chrome    *chromemcp.Bridge
 	Safari    *chromemcp.SafariBridge
 }
@@ -106,6 +109,14 @@ func New(workspace, dataDir string) (*App, error) {
 	processes.Privacy = privacy
 	c := computer.New(filepath.Join(dataDir, "screenshots"))
 	files.Register(registry)
+	transfers := harness.NewTransfers(files)
+	transfers.NewTunnel = func() harness.PublicTunnel {
+		return tunnel.New(tunnel.Options{Dir: filepath.Join(dataDir, "cloudflared"), Changed: registry.Signal})
+	}
+	if u, err := url.Parse(buildinfo.CloudURL); err == nil {
+		transfers.RelayHosts = []string{u.Host}
+	}
+	transfers.Register(registry)
 	processes.Register(registry)
 	c.Register(registry)
 	registry.PermissionCheck = func(spec harness.Spec) string {
@@ -138,7 +149,7 @@ func New(workspace, dataDir string) (*App, error) {
 	}
 	sharing := tunnel.New(tunnel.Options{Dir: filepath.Join(dataDir, "cloudflared"), Changed: registry.Signal, RedactSecrets: registry.AddSecrets})
 	ready = true
-	return &App{unlock: unlock, Server: &server.Server{Registry: registry, Projects: projects, Privacy: privacy, Store: s, Computer: c, Chrome: chrome, Safari: safari, Tunnel: sharing, Workspace: workspace, AccessPath: accessPath, UIKey: uiKey}, Processes: processes, Files: files, Chrome: chrome, Safari: safari}, nil
+	return &App{unlock: unlock, Server: &server.Server{Registry: registry, Projects: projects, Privacy: privacy, Store: s, Computer: c, Chrome: chrome, Safari: safari, Tunnel: sharing, Transfers: transfers, Workspace: workspace, AccessPath: accessPath, UIKey: uiKey}, Processes: processes, Files: files, Transfers: transfers, Chrome: chrome, Safari: safari}, nil
 }
 func (a *App) Close() {
 	if a.Server.Cloud != nil {
@@ -146,6 +157,7 @@ func (a *App) Close() {
 	}
 	a.Server.Tunnel.Close()
 	a.Server.Registry.SetPaused(true)
+	a.Transfers.Close()
 	a.Chrome.Close()
 	a.Safari.Close()
 	a.Processes.Stop()

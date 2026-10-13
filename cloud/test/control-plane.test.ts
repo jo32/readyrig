@@ -875,3 +875,58 @@ test('privacy.set: the console turns it on and off, agents can only turn it on',
   await beat(d, { ...relaySnapshot('off'), privacy: { enabled: true } } as any)
   assert.deepEqual((await call('/api/v1/computers/' + d.id, 'GET', undefined, token.headers)).result.computer.privacy, { enabled: true })
 })
+
+// A relay hub whose computer has one receive_file address open and keeps what arrives.
+function fakeReceiver(token: string, size: number) {
+  const state = { frames: [] as any[], received: new Uint8Array(0), connected: true, done: false }
+  env.RELAY = { idFromName: (name: string) => name, get: () => ({ fetch: async (input: RequestInfo, init?: RequestInit) => {
+    const req = new Request(input, init)
+    if (new URL(req.url).pathname !== '/upload') return Response.json({ error: 'unexpected' }, { status: 404 })
+    if (!state.connected) return Response.json({ error: 'not_connected' }, { status: 409 })
+    const frame = await req.json() as any
+    state.frames.push({ ...frame, data: frame.data === undefined ? undefined : Uint8Array.from(atob(frame.data), c => c.charCodeAt(0)) })
+    const header = (offset: number) => ({ 'Upload-Offset': String(offset), 'Upload-Length': String(size), ...(state.done ? { 'Upload-Complete': '1' } : {}) })
+    if (frame.token !== token) return Response.json({ http_status: 404, body: { header: {}, text: '404 page not found\n' } })
+    if (frame.method !== 'PATCH') return Response.json({ http_status: 200, body: { header: header(state.received.length), text: frame.method === 'GET' ? '{"done":false}' : '' } })
+    const offset = Number(frame.header['Upload-Offset'])
+    if (offset > state.received.length) return Response.json({ http_status: 409, body: { header: header(state.received.length), text: '' } })
+    const data = state.frames.at(-1).data as Uint8Array
+    const next = new Uint8Array(offset + data.length); next.set(state.received.subarray(0, offset)); next.set(data, offset); state.received = next
+    if (state.received.length === size) state.done = true
+    return Response.json({ http_status: 204, body: { header: header(state.received.length), text: '' } })
+  } }) } as unknown as DurableObjectNamespace
+  return state
+}
+
+test('relay upload addresses forward a PATCH body in 1 MiB frames, each naming its offset', async () => {
+  const device = await register(), token = 'ab'.repeat(32), size = 2.5 * 1024 * 1024
+  const receiver = fakeReceiver(token, size)
+  const body = new Uint8Array(size); for (let i = 0; i < size; i++) body[i] = (i * 7) % 251
+  const url = origin + '/u/' + device.id + '/' + token
+  const head = await worker.fetch(new Request(url, { method: 'HEAD' }), env)
+  assert.equal(head.status, 200); assert.equal(head.headers.get('Upload-Offset'), '0'); assert.equal(head.headers.get('Upload-Length'), String(size))
+  const patch = await worker.fetch(new Request(url, { method: 'PATCH', headers: { 'Upload-Offset': '0', 'Content-Length': String(size), 'Upload-SHA256': 'f'.repeat(64) }, body }), env)
+  assert.equal(patch.status, 204); assert.equal(patch.headers.get('Upload-Complete'), '1'); assert.equal(patch.headers.get('Upload-Offset'), String(size))
+  const patches = receiver.frames.filter(f => f.method === 'PATCH')
+  assert.deepEqual(patches.map(f => [f.header['Upload-Offset'], f.data.length, f.header['Upload-SHA256'] ?? null]), [['0', 1048576, null], ['1048576', 1048576, null], ['2097152', 524288, 'f'.repeat(64)]])
+  assert.deepEqual(receiver.received, body)
+})
+
+test('relay upload addresses stop at the first refused frame and check sizes and computers', async () => {
+  const device = await register(), token = 'cd'.repeat(32)
+  const receiver = fakeReceiver(token, 3 * 1024 * 1024)
+  const url = origin + '/u/' + device.id + '/' + token
+  const gap = await worker.fetch(new Request(url, { method: 'PATCH', headers: { 'Upload-Offset': '5', 'Content-Length': String(2 * 1024 * 1024) }, body: new Uint8Array(2 * 1024 * 1024) }), env)
+  assert.equal(gap.status, 409); assert.equal(gap.headers.get('Upload-Offset'), '0')
+  assert.equal(receiver.frames.length, 1)
+  assert.equal((await worker.fetch(new Request(url, { method: 'PATCH', headers: { 'Upload-Offset': '0', 'Content-Length': String(101 * 1024 * 1024) }, body: new Uint8Array(1) }), env)).status, 413)
+  assert.equal((await worker.fetch(new Request(url, { method: 'PATCH', headers: { 'Upload-Offset': '0', 'Content-Length': '10' }, body: new Uint8Array(11) }), env)).status, 400)
+  assert.equal((await worker.fetch(new Request(url, { method: 'POST', body: '' }), env)).status, 405)
+  assert.equal((await worker.fetch(new Request(origin + '/u/' + randomToken() + '/' + token, { method: 'HEAD' }), env)).status, 404)
+  assert.equal((await worker.fetch(new Request(origin + '/u/' + device.id + '/' + 'ef'.repeat(32), { method: 'GET' }), env)).status, 404)
+  receiver.connected = false
+  assert.equal((await worker.fetch(new Request(url, { method: 'HEAD' }), env)).status, 503)
+  await call('/api/devices/' + device.id, 'DELETE', undefined, owner())
+  receiver.connected = true
+  assert.equal((await worker.fetch(new Request(url, { method: 'HEAD' }), env)).status, 404)
+})

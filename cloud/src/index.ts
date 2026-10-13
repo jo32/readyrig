@@ -5,7 +5,7 @@ import { createRemoteJWKSet, jwtVerify } from 'jose'
 import { now, randomToken, hash, HTTPError, json, body, text } from './http.ts'
 import { computerAPI, issueDiscoveryToken } from './computer-discovery.ts'
 import { expireCommands, commandHistory, queueCommand } from './computer-commands.ts'
-import { relayClose, relayConnect } from './relay.ts'
+import { relayClose, relayConnect, relayUpload } from './relay.ts'
 export { validateCommand } from './computer-commands.ts'
 export { RelayHub } from './relay.ts'
 export { hash, randomToken } from './http.ts'
@@ -66,6 +66,9 @@ export function sanitizeSnapshot(raw: unknown): Record<string, unknown> {
 }
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url), path = url.pathname
+  // receive_file upload addresses work on any origin the computer was given.
+  const upload = /^\/u\/([A-Za-z0-9_-]{43})\/([0-9a-f]{64})$/.exec(path)
+  if (upload) return relayUpload(req, env, upload[1], upload[2])
   if (url.origin !== env.PUBLIC_ORIGIN) {
     const legacy = !!env.LEGACY_ORIGIN && url.origin === env.LEGACY_ORIGIN
     // Keep existing device credentials working on the original deployment URL.
