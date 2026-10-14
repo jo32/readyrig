@@ -1,7 +1,7 @@
 {
   "name": "rp",
-  "version": "0.3.1",
-  "description": "/rp attaches a ReadyRig project to the session: its AGENTS.md, CLAUDE.md and skills, until /rp detach",
+  "version": "0.4.0",
+  "description": "/rp attaches a ReadyRig project to the session: its AGENTS.md, CLAUDE.md and skills, until /rp detach; /rp link attaches it whenever Claude Code starts in this folder",
   "author": { "name": "jo32" },
   "types": "./types/index.d.ts"
 }

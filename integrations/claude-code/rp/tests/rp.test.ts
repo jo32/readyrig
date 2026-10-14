@@ -211,3 +211,149 @@ test('/rp detach tells the model and stops the note', async ($, on) => {
   await submit($, 'unrelated work')
   expect(world.notes()).toHaveLength(2)
 })
+
+const RUN_LINK = { ...RUN_RP, args: 'link' }
+const RUN_UNLINK = { ...RUN_RP, args: 'unlink' }
+const TVBOX = { machineId: 'mac', machineName: 'my-mac', project: PROJECTS.projects[0] }
+
+// The session's project root, and the status line and toasts the mod shows.
+function fakeFolder(on: any, root: string) {
+  const status: (string | undefined)[] = []
+  on('session.root', () => ({ value: root }) as any)
+  on('ui.status', ($: any, e: any) => {
+    status.push(e.text)
+    return { value: undefined } as any
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined } as any
+  })
+  on('command.register', ($: any, e: any) => ({ value: { command: e.name } }) as any)
+  on('session.start', ($: any, e: any) => ({ cwd: e.cwd }) as any)
+  return { status, toasts, last: () => status[status.length - 1] }
+}
+
+const start = ($: any) =>
+  $.session.start({ cwd: '/home/me/tvbox', surface: 'terminal', isInteractive: true })
+
+test('/rp link links the attached project to the folder', async ($, on) => {
+  const world = fakeWorld(on)
+  mock.store(on)
+  const folder = fakeFolder(on, '/home/me/tvbox')
+  expect(await $.command.run(RUN_UNLINK)).toMatchObject({
+    text: 'This folder is not linked to a ReadyRig project.',
+  })
+
+  await $.command.run(RUN_RP)
+  const ui = await $.ui.mount({ plugin: 'rp', surface: 'terminal', component: 'Pane', requestId: 'rp', props: PANE })
+  await ui.press({ key: 'b-mac-p1' })
+  // The engine puts "rp:" before the line itself.
+  expect(folder.last()).toBe('tvbox @ my-mac · AGENTS.md · 3 skills')
+
+  expect(await $.command.run(RUN_LINK)).toMatchObject({ text: expect.stringMatching(/^Linked \/home\/me\/tvbox to tvbox @ my-mac/) })
+  expect(folder.last()).toBe('tvbox @ my-mac · AGENTS.md · 3 skills · linked')
+  expect(world.notes()).toHaveLength(1)
+
+  expect(await $.command.run(RUN_DETACH)).toMatchObject({ text: expect.stringMatching(/stays linked/) })
+  expect(await $.command.run(RUN_UNLINK)).toMatchObject({ text: 'Unlinked /home/me/tvbox from tvbox @ my-mac.' })
+  expect(await $.command.run(RUN_UNLINK)).toMatchObject({ text: expect.stringMatching(/not linked/) })
+})
+
+test('/rp link with nothing attached picks, attaches and links', async ($, on) => {
+  const world = fakeWorld(on)
+  mock.store(on)
+  fakeFolder(on, '/home/me/tvbox')
+
+  expect(await $.command.run(RUN_LINK)).toMatchObject({ text: expect.stringMatching(/attach and link/) })
+  const ui = await $.ui.mount({ plugin: 'rp', surface: 'terminal', component: 'Pane', requestId: 'rp', props: PANE })
+  await ui.press({ key: 'b-mac-p1' })
+  expect(world.notes()).toHaveLength(1)
+  expect(await $.command.run(RUN_UNLINK)).toMatchObject({ text: expect.stringMatching(/^Unlinked \/home\/me\/tvbox from tvbox @ my-mac\. It stays attached/) })
+})
+
+test('a session started in a linked folder, or below it, attaches the project', async ($, on) => {
+  const world = fakeWorld(on)
+  mock.clock(on)
+  mock.store(on, { links: { '/home/me/tv': { ...TVBOX, machineName: 'old' }, '/home/me/tvbox': TVBOX } })
+  const folder = fakeFolder(on, '/home/me/tvbox/website')
+
+  await start($)
+  await submit($, 'first prompt')
+  const notes = world.notes()
+  expect(notes).toHaveLength(1)
+  expect(notes[0]).toContain('[rp:attached mac/p1]')
+  expect(notes[0]).toContain('linked this session\'s folder to the ReadyRig project "tvbox"')
+  expect(folder.last()).toBe('tvbox @ my-mac · AGENTS.md · 3 skills · linked')
+
+  // A reload of the mod starts it again: the project stays attached once.
+  await start($)
+  await submit($, 'second prompt')
+  expect(world.notes()).toHaveLength(1)
+  expect(world.sent).toEqual(['first prompt', 'second prompt'])
+})
+
+test('a folder that is not linked attaches nothing', async ($, on) => {
+  const world = fakeWorld(on)
+  mock.clock(on)
+  mock.store(on, { links: { '/home/me/tvbox': TVBOX } })
+  fakeFolder(on, '/home/me/tvbox2')
+
+  await start($)
+  await submit($, 'first prompt')
+  expect(world.notes()).toHaveLength(0)
+})
+
+test('a linked project waits for the ReadyRig server to connect', async ($, on) => {
+  let refusals = 2
+  // Before the server connects the session has no such tool.
+  on('tool.call', { tool: 'mcp__readyrig__list_computers' }, ($: any, e: any, next: any) => {
+    if (refusals-- > 0) throw new Error('no tool named "mcp__readyrig__list_computers" in this session')
+    return next(e)
+  })
+  const world = fakeWorld(on)
+  const clock = mock.clock(on)
+  mock.store(on, { links: { '/home/me/tvbox': TVBOX } })
+  const folder = fakeFolder(on, '/home/me/tvbox')
+
+  await start($)
+  await clock.advance(0)
+  expect(folder.last()).toBe('attaching tvbox @ my-mac (linked)…')
+  await clock.advance(2_000)
+  await clock.advance(2_000)
+  await submit($, 'first prompt')
+  expect(world.notes()).toHaveLength(1)
+  expect(refusals).toBe(-1)
+})
+
+test('a linked project that is gone says so and attaches nothing', async ($, on) => {
+  const world = fakeWorld(on)
+  mock.clock(on)
+  mock.store(on, { links: { '/home/me/tvbox': { ...TVBOX, project: { id: 'p9', name: 'old', path: '/x' } } } })
+  const folder = fakeFolder(on, '/home/me/tvbox')
+
+  await start($)
+  await submit($, 'first prompt')
+  expect(world.notes()).toHaveLength(0)
+  expect(folder.toasts).toEqual([
+    'Could not attach old @ my-mac, linked to this folder: the machine has no project old any more',
+  ])
+})
+
+test('a denied ReadyRig call is not tried again', async ($, on) => {
+  let calls = 0
+  on('tool.call', { tool: 'mcp__readyrig__list_computers' }, () => {
+    calls++
+    return { deny: 'not allowed' } as any
+  })
+  const world = fakeWorld(on)
+  mock.clock(on)
+  mock.store(on, { links: { '/home/me/tvbox': TVBOX } })
+  const folder = fakeFolder(on, '/home/me/tvbox')
+
+  await start($)
+  await submit($, 'first prompt')
+  expect(calls).toBe(1)
+  expect(world.notes()).toHaveLength(0)
+  expect(folder.toasts).toEqual(['Could not attach tvbox @ my-mac, linked to this folder: not allowed'])
+})

@@ -15,6 +15,10 @@ export type RpPick = {
   project: RpProject
 }
 
+// A folder on this computer linked to a ReadyRig project: a session started
+// in it, or in a folder below it, attaches the project.
+export type RpLink = RpPick & { folder: string }
+
 // A skill from .agents/skills or .claude/skills; path is project-relative.
 export type RpSkill = { name: string; description: string; path: string }
 
@@ -51,6 +55,10 @@ declare module 'claude-code' {
       needsNote: boolean
       progress: RpProgress | null
       query: string
+      // The link of the session's folder, or of the nearest folder above it.
+      link: RpLink | null
+      // The pane was opened by /rp link: the project picked is linked too.
+      isLinking: boolean
     }
   }
 }

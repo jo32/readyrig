@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type {
   RpAttached,
+  RpLink,
   RpMachine,
   RpPick,
   RpProgress,
@@ -19,6 +20,16 @@ const attached = atom({ plugin: 'rp', key: 'attached' } as const, null)
 const progress = atom({ plugin: 'rp', key: 'progress' } as const, null)
 const needsNote = atom({ plugin: 'rp', key: 'needsNote' } as const, false)
 const query = atom({ plugin: 'rp', key: 'query' } as const, '')
+const link = atom({ plugin: 'rp', key: 'link' } as const, null)
+const isLinking = atom({ plugin: 'rp', key: 'isLinking' } as const, false)
+
+// $.store key of the links, folder → project, kept across sessions.
+const LINKS = 'links'
+// While Claude Code starts, the ReadyRig MCP server may not be connected yet.
+const CONNECT_TRIES = 15
+const CONNECT_WAIT_MS = 2_000
+// How long the first prompt waits for that attach.
+const LINK_WAIT_MS = 8_000
 
 // The AGENTS.md standard (agents.md) and the universal skills folder first,
 // then Claude Code's own. A skill name found in both folders is listed once.
@@ -40,7 +51,10 @@ function parseJson(text: string | undefined): any {
 }
 
 async function callTool($: EngineInterface, args: Record<string, unknown>) {
-  const ran: any = await $.tool.call(args as any)
+  return answerOf(await $.tool.call(args as any))
+}
+
+function answerOf(ran: any) {
   if (ran.deny) throw new Error(ran.deny)
   if (ran.isError) throw new Error(ran.text ?? 'tool failed')
   return parseJson(ran.text)
@@ -170,9 +184,10 @@ async function setStep($: EngineInterface, id: string, patch: Partial<RpStep>) {
   if (next) showProgress($, next)
 }
 
+// Claude Code puts the plugin's name before its status line itself.
 function showProgress($: EngineInterface, p: RpProgress) {
   const finished = p.steps.filter(s => s.state !== 'waiting' && s.state !== 'running').length
-  $.ui.status(`rp: attaching ${p.projectName} @ ${p.machineName}… ${finished}/${p.steps.length}`)
+  $.ui.status(`attaching ${p.projectName} @ ${p.machineName}… ${finished}/${p.steps.length}`)
 }
 
 // AGENTS.md or CLAUDE.md at the project's root. A CLAUDE.md that only
@@ -232,12 +247,21 @@ function markerOf(kind: 'attached' | 'detached', p: RpPick): string {
 
 // The folder's path stays out of the note: it can name the user, and the
 // project argument is all the tools need. Relative paths resolve inside it.
-function attachNote(p: RpPick, files: ProjectFile[], skills: RpSkill[]): string {
+function attachNote(
+  p: RpPick,
+  files: ProjectFile[],
+  skills: RpSkill[],
+  isLinked: boolean,
+): string {
+  const who = isLinked
+    ? `The person linked this session's folder to the ReadyRig project ` +
+      `"${p.project.name}" on machine "${p.machineName}" (computer_id: ` +
+      `${p.machineId}), so it was attached when the session started`
+    : `The person attached the ReadyRig project "${p.project.name}" on machine ` +
+      `"${p.machineName}" (computer_id: ${p.machineId}) to this session`
   const parts = [
     markerOf('attached', p),
-    `The person attached the ReadyRig project "${p.project.name}" on machine ` +
-      `"${p.machineName}" (computer_id: ${p.machineId}) to this session, in place of ` +
-      `any project attached before. Until they detach it, work in this project ` +
+    `${who}, in place of any project attached before. Until they detach it, work in this project ` +
       `unless they say otherwise: call mcp__readyrig__call_computer_tool with ` +
       `computer_id "${p.machineId}", pass project: "${p.project.id}" in the tool's ` +
       `arguments, and use paths relative to the project.`,
@@ -303,13 +327,23 @@ function summary(a: Pick<RpAttached, 'instructionFiles' | 'skills'>): string {
   return [...a.instructionFiles, plural(a.skills.length, 'skill')].join(' · ')
 }
 
-function showStatus($: EngineInterface, a: RpAttached | null) {
-  $.ui.status(a ? `rp: ${a.project.name} @ ${a.machineName} · ${summary(a)}` : undefined)
+function isSame(a: RpPick | null, b: RpPick | null): boolean {
+  return Boolean(a && b && a.machineId === b.machineId && a.project.id === b.project.id)
+}
+
+async function showStatus($: EngineInterface) {
+  const a = await read($, attached)
+  const linked = isSame(a, await read($, link)) ? ' · linked' : ''
+  $.ui.status(a ? `${a.project.name} @ ${a.machineName} · ${summary(a)}${linked}` : undefined)
 }
 
 // Reads the project's instructions and skills with the pane listing each
 // step, then hands them to the model in one note at the end of the conversation.
-async function attach($: EngineInterface, p: RpPick) {
+async function attach(
+  $: EngineInterface,
+  p: RpPick,
+  isLinked = false,
+): Promise<RpAttached | null> {
   const start: RpProgress = {
     machineName: p.machineName,
     projectName: p.project.name,
@@ -333,7 +367,7 @@ async function attach($: EngineInterface, p: RpPick) {
     }
 
     await setStep($, NOTE_STEP, { state: 'running' })
-    const note = attachNote(p, instructions, skills)
+    const note = attachNote(p, instructions, skills, isLinked)
     await appendNote($, note)
     await setStep($, NOTE_STEP, { state: 'done' })
 
@@ -341,14 +375,18 @@ async function attach($: EngineInterface, p: RpPick) {
     await update($, attached, () => a)
     await update($, needsNote, () => false)
     await update($, progress, () => null)
-    showStatus($, a)
+    await showStatus($)
     await $.ui.close({ id: PANE })
-    $.ui.toast(`Attached ${p.project.name} @ ${p.machineName}: ${summary(a)}`)
+    $.ui.toast(
+      `Attached ${p.project.name} @ ${p.machineName}${isLinked ? ' (linked)' : ''}: ${summary(a)}`,
+    )
+    return a
   } catch (err) {
     const message = String((err as Error).message ?? err)
     await update($, progress, cur => cur && { ...cur, error: message })
     await setStep($, NOTE_STEP, { state: 'failed' })
-    showStatus($, await read($, attached))
+    await showStatus($)
+    return null
   }
 }
 
@@ -357,9 +395,107 @@ async function detach($: EngineInterface): Promise<string> {
   if (!a) return 'No ReadyRig project is attached.'
   await update($, attached, () => null)
   await update($, needsNote, () => false)
-  showStatus($, null)
+  await showStatus($)
   await appendNote($, detachNote(a))
-  return `Detached ${a.project.name} @ ${a.machineName}.`
+  const l = await read($, link)
+  const stays = isSame(a, l) ? ` This folder stays linked to it: /rp unlink stops attaching it.` : ''
+  return `Detached ${a.project.name} @ ${a.machineName}.${stays}`
+}
+
+function slashed(path: string): string {
+  return /[\\/]$/.test(path) ? path : `${path}/`
+}
+
+async function readLinks($: EngineInterface): Promise<Record<string, RpPick>> {
+  const value = await $.store.get(LINKS)
+  return value && typeof value === 'object' ? (value as Record<string, RpPick>) : {}
+}
+
+// The link of the session's project root, or of the nearest folder above it.
+async function findLink($: EngineInterface): Promise<RpLink | null> {
+  const root = await $.session.root()
+  const links = await readLinks($)
+  const folder = Object.keys(links)
+    .filter(f => root === f || slashed(root).startsWith(slashed(f)) || root.startsWith(`${f}\\`))
+    .sort((a, b) => b.length - a.length)[0]
+  const p = folder ? links[folder] : undefined
+  return folder && p ? { ...p, folder } : null
+}
+
+// Links the session's project root to `p`, in place of a link it had.
+async function linkHere($: EngineInterface, p: RpPick): Promise<string> {
+  const folder = await $.session.root()
+  const links = await readLinks($)
+  const pick: RpPick = { machineId: p.machineId, machineName: p.machineName, project: p.project }
+  await $.store.set(LINKS, { ...links, [folder]: pick })
+  await update($, link, () => ({ ...pick, folder }))
+  await showStatus($)
+  return (
+    `Linked ${folder} to ${p.project.name} @ ${p.machineName}: a session started ` +
+    `in this folder, or in one below it, attaches it.`
+  )
+}
+
+async function unlink($: EngineInterface): Promise<string> {
+  const l = await findLink($)
+  if (!l) return 'This folder is not linked to a ReadyRig project.'
+  const { [l.folder]: _, ...rest } = await readLinks($)
+  await $.store.set(LINKS, rest)
+  // A link of a folder above this one may apply now.
+  await update($, link, () => null)
+  const above = await findLink($)
+  await update($, link, () => above)
+  await showStatus($)
+  const a = await read($, attached)
+  const stays = isSame(a, l) ? ' It stays attached to this session: /rp detach detaches it.' : ''
+  return `Unlinked ${l.folder} from ${l.project.name} @ ${l.machineName}.${stays}`
+}
+
+// The machine of a link, with its projects. Until the ReadyRig MCP server
+// connects, the session has no such tool and the call rejects: try again. A
+// denied call or an error answer is final.
+async function linkedMachine($: EngineInterface, l: RpLink): Promise<RpMachine> {
+  let ran: any
+  for (let tries = 1; !ran; tries++) {
+    try {
+      ran = await $.tool.call({ tool: 'mcp__readyrig__list_computers' } as any)
+    } catch (err) {
+      if (tries >= CONNECT_TRIES) throw err
+      await $.clock.sleep(CONNECT_WAIT_MS)
+    }
+  }
+  const c = (answerOf(ran).computers ?? []).find((c: any) => c.id === l.machineId)
+  if (!c) return { ...unknownMachine(l), error: 'not one of your ReadyRig computers' }
+  return loadMachine($, c)
+}
+
+function unknownMachine(l: RpLink): RpMachine {
+  return { id: l.machineId, name: l.machineName, platform: '', online: false, projects: [] }
+}
+
+// A session started in a linked folder attaches the linked project. A reload
+// of the mod leaves an attached project as it is.
+async function attachLinked($: EngineInterface) {
+  const l = await findLink($)
+  await update($, link, () => l)
+  if (!l || (await read($, attached)) || (await read($, progress))) return showStatus($)
+  const failed = (why: string) => {
+    $.ui.status(undefined)
+    $.ui.toast(`Could not attach ${l.project.name} @ ${l.machineName}, linked to this folder: ${why}`)
+  }
+  $.ui.status(`attaching ${l.project.name} @ ${l.machineName} (linked)…`)
+  let m: RpMachine
+  try {
+    m = await linkedMachine($, l)
+  } catch (err) {
+    return failed(String((err as Error).message ?? err))
+  }
+  if (m.error) return failed(m.error)
+  const project = m.projects.find(p => p.id === l.project.id)
+  if (!project) return failed(`the machine has no project ${l.project.name} any more`)
+  const a = await attach($, { machineId: m.id, machineName: m.name, project }, true)
+  if (!a) failed((await read($, progress))?.error ?? 'unknown error')
+  await update($, progress, () => null)
 }
 
 const STEP_ICON: Record<RpStep['state'], string> = {
@@ -371,13 +507,17 @@ const STEP_ICON: Record<RpStep['state'], string> = {
 }
 
 export const register: Register = on => {
+  // Attaching a linked project runs while Claude Code starts; the first prompt
+  // waits for it, so the model has the note before it answers.
+  let linking: Promise<void> | null = null
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'rp',
       description: 'Attach a ReadyRig project (its AGENTS.md, CLAUDE.md and skills) to this session',
-      argumentHint: '[detach]',
+      argumentHint: '[detach | link | unlink]',
     })
-    showStatus($, await read($, attached))
+    linking = attachLinked($).catch(() => {})
 
     return next(e)
   })
@@ -388,18 +528,27 @@ export const register: Register = on => {
       await $.ui.close({ id: PANE })
       return { text: await detach($) }
     }
+    if (arg === 'unlink') return { text: await unlink($) }
+    const current = await read($, attached)
+    if (arg === 'link' && current) return { text: await linkHere($, current) }
 
+    const isLink = arg === 'link'
     await update($, query, () => '')
     await update($, progress, () => null)
+    await update($, isLinking, () => isLink)
     await $.ui.open({
       id: PANE,
-      title: 'ReadyRig projects',
+      title: isLink ? 'Link a ReadyRig project to this folder' : 'ReadyRig projects',
       focus: true,
       closeOnEscape: true,
     })
     await load($)
 
-    return { text: 'Pick a ReadyRig project to attach in the pane (Esc to cancel).' }
+    return {
+      text: isLink
+        ? 'Pick a ReadyRig project to attach and link to this folder in the pane (Esc to cancel).'
+        : 'Pick a ReadyRig project to attach in the pane (Esc to cancel).',
+    }
   })
 
   // The note is appended once, at the end of the conversation, so the cached
@@ -419,8 +568,14 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    const isCommand = e.text.trimStart().startsWith('/')
+    // Held under the hook's 10 s budget; a slower attach adds its note when done.
+    if (linking && !isCommand) {
+      await Promise.race([linking, $.clock.sleep(LINK_WAIT_MS)])
+      linking = null
+    }
     const a = await read($, attached)
-    if (a && (await read($, needsNote)) && !e.text.trimStart().startsWith('/')) {
+    if (a && (await read($, needsNote)) && !isCommand) {
       await appendNote($, a.note)
       await update($, needsNote, () => false)
     }
@@ -438,6 +593,7 @@ export const register: Register = on => {
     const current = await read($, attached)
     const running = await read($, progress)
     const search = await read($, query)
+    const linked = await read($, link)
     const shown = filterMachines(list, search)
 
     if (running) {
@@ -475,8 +631,14 @@ export const register: Register = on => {
       )
     }
 
-    const choose = (m: RpMachine, project: RpProject) =>
-      attach($, { machineId: m.id, machineName: m.name, project })
+    // From /rp link, the project picked is linked once it is attached.
+    const choose = async (m: RpMachine, project: RpProject) => {
+      const a = await attach($, { machineId: m.id, machineName: m.name, project })
+      if (a && (await read($, isLinking))) {
+        await update($, isLinking, () => false)
+        $.ui.toast(await linkHere($, a))
+      }
+    }
 
     // Enter in the search box picks the first project that matches.
     const chooseFirst = async (text: string) => {
@@ -537,7 +699,7 @@ export const register: Register = on => {
               >
                 <Box flexDirection="row" flexShrink={0}>
                   <Box width={2} flexShrink={0}>
-                    <Text>{current?.machineId === m.id && current.project.id === p.id ? '●' : ' '}</Text>
+                    <Text>{isSame(current, { machineId: m.id, machineName: m.name, project: p }) ? '●' : ' '}</Text>
                   </Box>
                   <Box width={isStacked ? undefined : nameWidth + 2} flexShrink={0}>
                     <Button
@@ -556,7 +718,7 @@ export const register: Register = on => {
           </Box>
         ))}
         {current && (
-          <Box flexDirection="row">
+          <Box flexDirection="row" flexWrap="wrap">
             <Text dimColor>Attached: {current.project.name} @ {current.machineName} · </Text>
             <Button
               key="detach"
@@ -566,6 +728,30 @@ export const register: Register = on => {
                 await detach($)
                 await $.ui.close({ id: PANE })
               }}
+            />
+            {!isSame(current, linked) && (
+              <Box key="link-row" flexDirection="row">
+                <Text dimColor> · </Text>
+                <Button
+                  key="link"
+                  plain
+                  label="link to this folder"
+                  onPress={async () => $.ui.toast(await linkHere($, current))}
+                />
+              </Box>
+            )}
+          </Box>
+        )}
+        {linked && (
+          <Box flexDirection="row" flexWrap="wrap">
+            <Text dimColor>
+              Linked: {linked.folder} → {linked.project.name} @ {linked.machineName} ·{' '}
+            </Text>
+            <Button
+              key="unlink"
+              plain
+              label="unlink"
+              onPress={async () => $.ui.toast(await unlink($))}
             />
           </Box>
         )}
