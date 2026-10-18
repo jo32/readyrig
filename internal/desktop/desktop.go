@@ -236,7 +236,8 @@ func Run(handler http.Handler, registry *harness.Registry, updates *update.Manag
 	for _, w := range []*application.WebviewWindow{window, panel} {
 		w.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) { w.Hide(); e.Cancel() })
 	}
-	app.Event.OnApplicationEvent(events.Mac.ApplicationShouldHandleReopen, func(*application.ApplicationEvent) { showMain() })
+	// A hook, not a listener: Wails' own reopen listener shows every hidden window, the panel included.
+	app.Event.RegisterApplicationEventHook(events.Mac.ApplicationShouldHandleReopen, func(e *application.ApplicationEvent) { showMain(); e.Cancel() })
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		go func() {
 			ticker := time.NewTicker(125 * time.Millisecond)
