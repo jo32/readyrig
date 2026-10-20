@@ -44,6 +44,17 @@ export type RpProgress = {
   error?: string
 }
 
+// A picture show_image drew: a PNG of at most 2 MiB, base64, and where it is.
+export type RpImage = {
+  png: string
+  width: number
+  height: number
+  path: string
+  machineId: string
+  machineName: string
+  projectId: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     rp: {
@@ -59,6 +70,8 @@ declare module 'claude-code' {
       link: RpLink | null
       // The pane was opened by /rp link: the project picked is linked too.
       isLinking: boolean
+      // By show_image call (tool_use_id); null once the picture is let go.
+      image: StateFamily<RpImage | null>
     }
   }
 }

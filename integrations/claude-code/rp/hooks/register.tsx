@@ -1,8 +1,9 @@
-import { atom, read, update } from 'claude-code'
+import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type {
   RpAttached,
+  RpImage,
   RpLink,
   RpMachine,
   RpPick,
@@ -22,6 +23,8 @@ const needsNote = atom({ plugin: 'rp', key: 'needsNote' } as const, false)
 const query = atom({ plugin: 'rp', key: 'query' } as const, '')
 const link = atom({ plugin: 'rp', key: 'link' } as const, null)
 const isLinking = atom({ plugin: 'rp', key: 'isLinking' } as const, false)
+// One per show_image call, by its tool_use_id: what its result row draws.
+const images = atom({ plugin: 'rp', key: 'image' } as const, null)
 
 // $.store key of the links, folder → project, kept across sessions.
 const LINKS = 'links'
@@ -38,6 +41,24 @@ const SKILL_DIRS = ['.agents/skills', '.claude/skills']
 // Past this the note says where to read the rest, so one huge file can't fill the context.
 const INSTRUCTIONS_MAX = 40_000
 const NOTE_STEP = 'note'
+
+// show_image: a picture from the attached project, drawn in its tool row.
+const SHOW_IMAGE = 'show_image'
+const SHOW_IMAGE_TOOL = 'mcp__rp__show_image'
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|heic|heif|tiff?|bmp)$/i
+// read_file reads inside the project only, so the PNG copy passes through a
+// folder there; it is removed as soon as it has been read.
+const PREVIEW_DIR = '.rr-preview'
+// The terminal's Image takes a PNG of at most 2 MiB.
+const IMAGE_MAX_BYTES = 2 * 1024 * 1024
+const IMAGE_MAX_SIDE = 1200
+const IMAGE_MIN_SIDE = 200
+// Pictures kept for redrawing rows; an older row draws its text alone.
+const IMAGES_KEPT = 12
+// A terminal cell is about twice as tall as it is wide.
+const IMAGE_COLUMNS = 60
+const IMAGE_ROWS = 30
+const CELL_PX = 9
 
 type ProjectFile = { path: string; text: string; isTruncated: boolean }
 
@@ -498,6 +519,123 @@ async function attachLinked($: EngineInterface) {
   await update($, progress, () => null)
 }
 
+export function shellQuote(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`
+}
+
+// Why show_image refuses a path, or null. The PNG copy is made by a shell
+// command, so the path is held inside the project as read_file holds its own.
+export function imagePathError(path: string): string | null {
+  if (!path.trim()) return 'give the path of an image file'
+  if (/^[/~$\\]|^[A-Za-z]:/.test(path)) return 'use a path relative to the project'
+  if (path.split(/[\\/]/).includes('..')) return 'the path must stay inside the project'
+  if (!IMAGE_EXT.test(path)) return 'not an image file (png, jpg, gif, webp, heic, tiff or bmp)'
+  return null
+}
+
+// On macOS, sips writes a PNG of the picture to `out`, at most IMAGE_MAX_SIDE
+// a side and never enlarged, smaller until it fits IMAGE_MAX_BYTES, and prints
+// `ok <width> <height>`. Without sips it prints `no-sips` and writes nothing.
+export function convertScript(path: string, out: string): string {
+  const src = shellQuote(`./${path}`)
+  const dst = shellQuote(out)
+  return [
+    'set -e',
+    'command -v sips >/dev/null 2>&1 || { echo no-sips; exit 0; }',
+    `mkdir -p ${PREVIEW_DIR}`,
+    `big=$(sips -g pixelWidth -g pixelHeight ${src} | awk '/pixel(Width|Height)/ { if ($2 > m) m = $2 } END { print m + 0 }')`,
+    `m=${IMAGE_MAX_SIDE}`,
+    'if [ "$big" -gt 0 ] && [ "$big" -lt "$m" ]; then m=$big; fi',
+    'while :; do',
+    `  sips -s format png -Z "$m" ${src} --out ${dst} >/dev/null`,
+    `  if [ "$(stat -f %z ${dst})" -le ${IMAGE_MAX_BYTES} ] || [ "$m" -le ${IMAGE_MIN_SIDE} ]; then break; fi`,
+    '  m=$((m * 7 / 10))',
+    'done',
+    `sips -g pixelWidth -g pixelHeight ${dst} | awk '/pixelWidth/ { w = $2 } /pixelHeight/ { h = $2 } END { print "ok", w, h }'`,
+  ].join('\n')
+}
+
+// A PNG's size, from the IHDR chunk at the start of its base64.
+export function pngSize(base64: string): { width: number; height: number } | null {
+  const head = atob(base64.slice(0, 32))
+  if (head.slice(1, 4) !== 'PNG' || head.length < 24) return null
+  const at = (i: number) =>
+    ((head.charCodeAt(i) << 24) | (head.charCodeAt(i + 1) << 16) | (head.charCodeAt(i + 2) << 8) | head.charCodeAt(i + 3)) >>> 0
+  return { width: at(16), height: at(20) }
+}
+
+// The terminal cells a picture is drawn over, its shape kept.
+export function imageCells(width: number, height: number): { columns: number; rows: number } {
+  let columns = Math.max(4, Math.min(IMAGE_COLUMNS, Math.round(width / CELL_PX)))
+  let rows = Math.max(2, Math.round((columns * height) / width / 2))
+  if (rows > IMAGE_ROWS) {
+    columns = Math.max(4, Math.round((columns * IMAGE_ROWS) / rows))
+    rows = IMAGE_ROWS
+  }
+  return { columns, rows }
+}
+
+// A shell command on a ReadyRig computer; a non-zero exit rejects with its stderr.
+async function runCommand($: EngineInterface, machineId: string, project: string, command: string) {
+  const out = await callComputer($, machineId, 'exec_command', {
+    project,
+    command,
+    yield_time_ms: 10_000,
+  })
+  if (out.running) throw new Error('the command is taking too long')
+  if (out.exit_code) throw new Error(String(out.stderr || out.stdout || `exit ${out.exit_code}`).trim())
+  return String(out.stdout ?? '')
+}
+
+// read_file answers a picture as an MCP image block beside its JSON text.
+async function readPng($: EngineInterface, machineId: string, project: string, path: string) {
+  const ran: any = await $.tool.call({
+    tool: 'mcp__readyrig__call_computer_tool',
+    computer_id: machineId,
+    tool_name: 'read_file',
+    arguments: { project, path },
+  } as any)
+  const out = answerOf(ran)
+  if (out.status === 'error' || out.error) throw new Error(String(out.error || 'tool failed'))
+  const blocks: any[] = Array.isArray(ran.result) ? ran.result : (ran.result?.content ?? [])
+  const block = blocks.find(b => b?.type === 'image')
+  const data = block?.data ?? block?.source?.data
+  if (typeof data !== 'string' || !data) throw new Error('ReadyRig sent no picture')
+  if (!pngSize(data)) throw new Error('ReadyRig sent a picture that is not a PNG')
+  return data
+}
+
+// The picture as a PNG the terminal can draw: converted on macOS, read as it
+// is elsewhere when it is a PNG already. The copy is removed in every case.
+async function fetchImage($: EngineInterface, p: RpPick, path: string, id: string): Promise<RpImage> {
+  const project = p.project.id
+  const copy = `${PREVIEW_DIR}/${id.replace(/[^\w-]/g, '')}.png`
+  let png: string
+  try {
+    const said = (await runCommand($, p.machineId, project, convertScript(path, copy))).trim()
+    if (said === 'no-sips') {
+      if (!/\.png$/i.test(path)) throw new Error('only PNG files can be shown from a computer without macOS sips')
+      png = await readPng($, p.machineId, project, path)
+    } else {
+      png = await readPng($, p.machineId, project, copy)
+    }
+  } finally {
+    await runCommand($, p.machineId, project, `rm -f ${shellQuote(copy)}; rmdir ${PREVIEW_DIR} 2>/dev/null || true`).catch(() => {})
+  }
+  if (png.length * 0.75 > IMAGE_MAX_BYTES) throw new Error('the picture is larger than 2 MiB')
+  const size = pngSize(png)!
+  return { ...size, png, path, machineId: p.machineId, machineName: p.machineName, projectId: project }
+}
+
+async function openInPreview($: EngineInterface, img: RpImage): Promise<string | null> {
+  try {
+    await runCommand($, img.machineId, img.projectId, `open -a Preview ${shellQuote(`./${img.path}`)}`)
+    return null
+  } catch (err) {
+    return `Could not open ${img.path} in Preview on ${img.machineName}: ${String((err as Error).message ?? err)}`
+  }
+}
+
 const STEP_ICON: Record<RpStep['state'], string> = {
   waiting: '·',
   running: '…',
@@ -510,6 +648,8 @@ export const register: Register = on => {
   // Attaching a linked project runs while Claude Code starts; the first prompt
   // waits for it, so the model has the note before it answers.
   let linking: Promise<void> | null = null
+  // The show_image calls whose pictures are kept, oldest first.
+  const shown: string[] = []
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -517,10 +657,59 @@ export const register: Register = on => {
       description: 'Attach a ReadyRig project (its AGENTS.md, CLAUDE.md and skills) to this session',
       argumentHint: '[detach | link | unlink]',
     })
+    await $.tool.register({
+      name: SHOW_IMAGE,
+      description:
+        'Show the person an image file from the ReadyRig project attached with /rp: it is drawn ' +
+        'in their terminal (Ghostty, kitty) with an "Open in Preview" button, and where the ' +
+        'terminal draws no pictures (tmux, herdr) the button alone. Use it when they ask to ' +
+        'see an image or a screenshot, or when showing one helps. You do not see the picture: ' +
+        'read it with read_file when you need to look at it yourself.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'The image file, relative to the attached project' },
+          open_in_preview: {
+            type: 'boolean',
+            description: 'Also open it in Preview on that Mac, as when they ask to open it',
+          },
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+      isDeferred: false,
+    })
     linking = attachLinked($).catch(() => {})
 
     return next(e)
   })
+
+  on('tool.call', { tool: SHOW_IMAGE_TOOL }, async ($, e) => {
+    const input = e as unknown as { path?: unknown; open_in_preview?: unknown }
+    const path = typeof input.path === 'string' ? input.path.replace(/^\.\//, '') : ''
+    const a = await read($, attached)
+    if (!a) return { deny: 'No ReadyRig project is attached: the person attaches one with /rp.' }
+    const why = imagePathError(path)
+    if (why) return { deny: `Cannot show ${path || 'that'}: ${why}.` }
+    let img: RpImage
+    try {
+      img = await fetchImage($, a, path, e.tool_use_id)
+    } catch (err) {
+      return { deny: `Cannot show ${path}: ${String((err as Error).message ?? err)}` }
+    }
+    await update($, memberOf(images, { requestId: e.tool_use_id }), () => img)
+    shown.push(e.tool_use_id)
+    for (const old of shown.splice(0, Math.max(0, shown.length - IMAGES_KEPT))) {
+      await update($, memberOf(images, { requestId: old }), () => null)
+    }
+    const failed = input.open_in_preview === true ? await openInPreview($, img) : null
+    const opened = input.open_in_preview === true && !failed ? ' and opened it in Preview' : ''
+    return {
+      result:
+        `Showed ${path} (${img.width}×${img.height} PNG) from ${a.project.name} @ ${a.machineName} ` +
+        `to the person${opened}.${failed ? ` ${failed}` : ''}`,
+    }
+  }).catch(($, e) => ({ deny: `Cannot show the image: it took too long or failed.` }))
 
   on('command.run', { command: 'rp' }, async ($, e) => {
     const arg = e.args.trim()
@@ -581,6 +770,44 @@ export const register: Register = on => {
     }
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // The picture over the row's cells where the terminal draws pictures, its
+  // dim path elsewhere, and a button that opens it in Preview on the Mac.
+  on('ui.render', { component: 'ToolResult', props: { tool: SHOW_IMAGE_TOOL } }, async ($, e, next) => {
+    if (e.props.isErrored) return next(e)
+    const img = await read($, memberOf(images, e))
+    if (!img) return next(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const Image = 'Image' in elements ? elements.Image : null
+    const cells = imageCells(img.width, img.height)
+    return (
+      <Box flexDirection="column">
+        {Image && (
+          <Image
+            source={{ png: img.png }}
+            columns={cells.columns}
+            rows={cells.rows}
+            alt={`[${img.path}]`}
+          />
+        )}
+        <Box flexDirection="row" flexWrap="wrap">
+          <Text dimColor>
+            {img.path} · {img.width}×{img.height} · {img.machineName} ·{' '}
+          </Text>
+          <Button
+            key="preview"
+            plain
+            label="Open in Preview"
+            onPress={async () => {
+              const failed = await openInPreview($, img)
+              if (failed) $.ui.toast(failed)
+            }}
+          />
+        </Box>
+      </Box>
+    )
+  })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)

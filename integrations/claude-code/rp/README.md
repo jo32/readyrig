@@ -1,6 +1,6 @@
 # rp: attach a ReadyRig project to Claude Code
 
-`rp` is a Claude Code mod (a plugin of function hooks). It adds a `/rp` command that lists the approved projects on every ReadyRig computer, grouped by machine. The project you pick is attached to the session: Claude gets its `AGENTS.md`, `CLAUDE.md` and skills, and works in it until you detach it. Link a folder to a project with `/rp link`, and every Claude Code session you start in that folder attaches the project by itself.
+`rp` is a Claude Code mod (a plugin of function hooks). It adds a `/rp` command that lists the approved projects on every ReadyRig computer, grouped by machine. The project you pick is attached to the session: Claude gets its `AGENTS.md`, `CLAUDE.md` and skills, and works in it until you detach it. Link a folder to a project with `/rp link`, and every Claude Code session you start in that folder attaches the project by itself. Claude can also show you an image from the project with its `show_image` tool: it is drawn in your terminal, with a button that opens it in Preview on the Mac.
 
 ```
 jiangdailins-MacBook-Pro.local (darwin)
@@ -82,17 +82,33 @@ The search matches project names, paths and machine names, ignoring case. With s
 
 The pane lines up project names in one column. When the pane is too narrow for the name and path side by side, each path goes on its own indented line under the name.
 
+## Showing images
+
+The mod gives Claude a `show_image` tool (`mcp__rp__show_image`). Ask Claude to show you a screenshot or any image in the attached project, and it calls the tool with the file's path, relative to the project:
+
+```
+rp - show_image (MCP)(path: "website/public/brand/social-icon.png")
+  [the picture]
+  website/public/brand/social-icon.png · 1200×630 · Macbook-m3max · [ Open in Preview ]
+```
+
+- **The picture** is drawn in the tool's row where the terminal can draw pixels (the kitty graphics protocol: Ghostty, kitty), also over SSH. A terminal multiplexer in between, such as tmux or herdr, shows the dim path instead.
+- **Open in Preview** opens the file in Preview on the computer the project is on. Click it in fullscreen mode, or ask Claude to open it: the tool's `open_in_preview` does the same.
+- **Formats**: on macOS, `sips` turns PNG, JPEG, GIF, WebP, HEIC, TIFF and BMP into a PNG of at most 1200 pixels a side (never enlarged), made smaller until it fits the terminal's 2 MiB limit. On a computer without `sips` only PNG files can be shown. `read_file` reads inside the project only, so the PNG copy is written to `.rr-preview/` in the project and removed, folder and all, as soon as it has been read.
+- **What Claude gets**: only a line saying what was shown, not the picture, so showing images costs Claude no image tokens. Claude can read the file with `read_file` when it needs to look at it.
+- The path must stay inside the project, and the file must be an image. The mod keeps the last 12 pictures for redrawing their rows; an older row, or one from before Claude Code restarted, shows Claude Code's own result line.
+
 ## How it works
 
-`/rp` calls the ReadyRig MCP tools through Claude Code, the same way Claude would: `list_computers`, then `list_projects` on each online computer through `call_computer_tool`. Attaching uses `read_file` and `list_directory` on the project. These calls go through Claude Code's normal permission checks, so you may be asked to allow them the first time.
+`/rp` calls the ReadyRig MCP tools through Claude Code, the same way Claude would: `list_computers`, then `list_projects` on each online computer through `call_computer_tool`. Attaching uses `read_file` and `list_directory` on the project. `show_image` uses `exec_command` (for `sips`, removing the copy and `open -a Preview`) and `read_file`. These calls go through Claude Code's normal permission checks, so you may be asked to allow them the first time.
 
 | File | Purpose |
 | --- | --- |
 | `.claude-plugin/plugin.json` | Manifest |
 | `hooks/hooks.json` | Points Claude Code at the hooks module |
-| `hooks/register.tsx` | The `/rp` command, the pane, attaching and detaching, linking folders, and the prompt hook that restores the note |
+| `hooks/register.tsx` | The `/rp` command, the pane, attaching and detaching, linking folders, the prompt hook that restores the note, and the `show_image` tool and its row |
 | `types/index.d.ts` | Types for the values the mod keeps in session state |
-| `tests/rp.test.ts` | Attaches projects using fake ReadyRig answers, then checks the note, the progress steps, search, re-adding the note after compaction, detach, and linking folders |
+| `tests/rp.test.ts` | Attaches projects using fake ReadyRig answers, then checks the note, the progress steps, search, re-adding the note after compaction, detach, and linking folders; and `show_image`'s conversion, the row it draws, Open in Preview and the paths it refuses |
 
 ## Develop
 

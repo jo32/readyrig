@@ -230,6 +230,7 @@ function fakeFolder(on: any, root: string) {
     return { value: undefined } as any
   })
   on('command.register', ($: any, e: any) => ({ value: { command: e.name } }) as any)
+  on('tool.register', ($: any, e: any) => ({ value: { tool: `mcp__rp__${e.name}` } }) as any)
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }) as any)
   return { status, toasts, last: () => status[status.length - 1] }
 }
@@ -356,4 +357,111 @@ test('a denied ReadyRig call is not tried again', async ($, on) => {
   expect(calls).toBe(1)
   expect(world.notes()).toHaveLength(0)
   expect(folder.toasts).toEqual(['Could not attach tvbox @ my-mac, linked to this folder: not allowed'])
+})
+
+// A 1×1 PNG.
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+const SHOW = 'mcp__rp__show_image'
+
+// The Mac's shell and the PNG copy show_image reads back; registered above
+// fakeWorld, so every other call goes on to it.
+function fakeMac(on: any, { hasSips = true } = {}) {
+  const commands: string[] = []
+  const reads: string[] = []
+  on('tool.call', { tool: 'mcp__readyrig__call_computer_tool' }, async ($: any, e: any, next: any) => {
+    const args = e.arguments ?? {}
+    if (e.tool_name === 'exec_command') {
+      commands.push(args.command)
+      const stdout = args.command.includes('sips -s format png') ? (hasSips ? 'ok 1 1\n' : 'no-sips\n') : ''
+      return answer({ status: 'success', result: { exit_code: 0, stdout, stderr: '' } })
+    }
+    if (e.tool_name === 'read_file' && /\.png$/.test(args.path)) {
+      reads.push(args.path)
+      const text = JSON.stringify({ status: 'success', result: { image: true, mime: 'image/png' } })
+      return { result: [{ type: 'image', mimeType: 'image/png', data: PNG }, { type: 'text', text }], text } as any
+    }
+    return next(e)
+  })
+  return { commands, reads }
+}
+
+async function attachTvbox($: any) {
+  await $.command.run(RUN_RP)
+  const ui = await $.ui.mount({ plugin: 'rp', surface: 'terminal', component: 'Pane', requestId: 'rp', props: PANE })
+  await ui.press({ key: 'b-mac-p1' })
+}
+
+const showRow = (id: string) => ({
+  plugin: 'rp',
+  surface: 'terminal',
+  component: 'ToolResult',
+  requestId: id,
+  props: { tool_use_id: id, tool: SHOW, output: 'Showed it', isErrored: false },
+}) as any
+
+test('show_image converts the picture on the Mac and draws it with a Preview button', async ($, on) => {
+  const mac = fakeMac(on)
+  fakeWorld(on)
+  await attachTvbox($)
+
+  const out: any = await $.tool.call({ tool: SHOW, tool_use_id: 'toolu_1', path: './shots/home page.jpg' } as any)
+  expect(out.result).toBe('Showed shots/home page.jpg (1×1 PNG) from tvbox @ my-mac to the person.')
+  expect(mac.commands[0]).toContain(`sips -s format png -Z "$m" './shots/home page.jpg' --out '.rr-preview/toolu_1.png'`)
+  expect(mac.reads).toEqual(['.rr-preview/toolu_1.png'])
+  // The copy is removed once read.
+  expect(mac.commands[1]).toBe(`rm -f '.rr-preview/toolu_1.png'; rmdir .rr-preview 2>/dev/null || true`)
+
+  const ui = await $.ui.mount(showRow('toolu_1'))
+  const image = await ui.find({ type: 'Image' })
+  expect(image?.props).toMatchObject({ source: { png: PNG }, alt: '[shots/home page.jpg]' })
+  expect(await ui.findAll({ text: /shots\/home page\.jpg · 1×1 · my-mac/ })).not.toHaveLength(0)
+
+  await ui.press({ key: 'preview' })
+  expect(mac.commands[2]).toBe(`open -a Preview './shots/home page.jpg'`)
+})
+
+test('show_image reads a PNG as it is where there is no sips, and refuses other formats', async ($, on) => {
+  const mac = fakeMac(on, { hasSips: false })
+  fakeWorld(on)
+  await attachTvbox($)
+
+  const png: any = await $.tool.call({ tool: SHOW, tool_use_id: 'toolu_2', path: 'logo.png' } as any)
+  expect(png.result).toMatch(/^Showed logo\.png/)
+  expect(mac.reads).toEqual(['logo.png'])
+
+  const jpg: any = await $.tool.call({ tool: SHOW, tool_use_id: 'toolu_3', path: 'photo.jpg' } as any)
+  expect(jpg.deny).toMatch(/only PNG files/)
+})
+
+test('show_image refuses paths outside the project, other files, and no project', async ($, on) => {
+  fakeMac(on)
+  fakeWorld(on)
+  on('ui.render', { component: 'ToolResult' }, () => ({ type: 'Text', children: ['the engine row'] }) as any)
+  const none: any = await $.tool.call({ tool: SHOW, path: 'a.png' } as any)
+  expect(none.deny).toMatch(/No ReadyRig project is attached/)
+
+  await attachTvbox($)
+  for (const [path, why] of [
+    ['/etc/a.png', /relative to the project/],
+    ['~/a.png', /relative to the project/],
+    ['shots/../../a.png', /inside the project/],
+    ['notes.txt', /not an image file/],
+  ] as const) {
+    const out: any = await $.tool.call({ tool: SHOW, path } as any)
+    expect(out.deny).toMatch(why)
+  }
+
+  // A row whose picture the mod does not hold is drawn as the engine draws it.
+  const ui = await $.ui.mount(showRow('toolu_gone'))
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  expect(await ui.findAll({ text: 'the engine row' })).not.toHaveLength(0)
+})
+
+test('show_image with open_in_preview opens it too', async ($, on) => {
+  const mac = fakeMac(on)
+  fakeWorld(on)
+  await attachTvbox($)
+  const out: any = await $.tool.call({ tool: SHOW, tool_use_id: 'toolu_4', path: 'a.png', open_in_preview: true } as any)
+  expect(out.result).toMatch(/and opened it in Preview\.$/)
+  expect(mac.commands).toContain(`open -a Preview './a.png'`)
 })
