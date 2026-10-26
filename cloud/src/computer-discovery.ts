@@ -52,11 +52,13 @@ export async function issueDiscoveryToken(env: Env, owner: User, sessionHash: st
 // Tool calls with the cloud credential go only over the relay, which the user turned on
 // locally for this. A computer with a tunnel link is called at that link directly, so its
 // tool data never passes through this service. The reply is the computer's own response.
+// Only agents read these errors, so like the MCP tools and relayCall's they are English;
+// the Chinese messages elsewhere double as the console's translation keys.
 async function relayTool(req: Request, env: Env, d: Computer, name: string): Promise<Response> {
   const device = summary(d)
-  if (!device.online) throw new HTTPError(409, '电脑离线，请让用户打开 ReadyRig 并保持电脑唤醒')
-  if (device.paused) throw new HTTPError(423, '电脑控制已暂停，只有用户授权时才可恢复')
-  if (device.relay.state !== 'connected') throw new HTTPError(409, device.links ? '这台电脑没有开启云端转发，请直接调用 links.gateway 上的工具' : '这台电脑没有可用的连接。请让用户在 ReadyRig 中开启云端转发；只有用户同意时才用 tunnel.start 开启公网分享')
+  if (!device.online) throw new HTTPError(409, 'Computer is offline. Open ReadyRig and keep the computer awake.')
+  if (device.paused) throw new HTTPError(423, 'Computer control is paused. Resume control only if authorized by the user.')
+  if (device.relay.state !== 'connected') throw new HTTPError(409, device.links ? 'Cloud forwarding is not connected on this computer. Call its tools directly at links.gateway.' : 'This computer has no usable connection. Ask the user to turn on cloud forwarding in ReadyRig; start a tunnel with tunnel.start only if the user agrees.')
   const args = await body(req, 2 * 1024 * 1024)
   const session = 'cloud-api-' + (/^[A-Za-z0-9_.:-]{1,64}$/.exec(req.headers.get('X-Session-ID') || '')?.[0] || 'default')
   const reply = await relayCall(env, d.id, { tool: name, args, session, client: 'ReadyRig Cloud API' })
