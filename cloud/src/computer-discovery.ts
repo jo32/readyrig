@@ -2,6 +2,7 @@ import type { Env, User } from './index.ts'
 import { now, randomToken, hash, HTTPError, json, body } from './http.ts'
 import { agentPrompt } from './agent-prompt.ts'
 import { commandHistory, queueCommand } from './computer-commands.ts'
+import { relayCall } from './relay.ts'
 
 type ComputerCredential = { user_id: string }
 type Computer = { id: string; name: string; platform: string; last_seen: number; snapshot: string }
@@ -48,14 +49,30 @@ export async function issueDiscoveryToken(env: Env, owner: User, sessionHash: st
   await env.DB.prepare('INSERT INTO discovery_tokens(token_hash,session_hash) VALUES(?,?)').bind(await hash(token), sessionHash).run()
   return json({ token, expires_at: session.expires_at }, 201)
 }
+// Tool calls with the cloud credential go only over the relay, which the user turned on
+// locally for this. A computer with a tunnel link is called at that link directly, so its
+// tool data never passes through this service. The reply is the computer's own response.
+// Only agents read these errors, so like the MCP tools and relayCall's they are English;
+// the Chinese messages elsewhere double as the console's translation keys.
+async function relayTool(req: Request, env: Env, d: Computer, name: string): Promise<Response> {
+  const device = summary(d)
+  if (!device.online) throw new HTTPError(409, 'Computer is offline. Open ReadyRig and keep the computer awake.')
+  if (device.paused) throw new HTTPError(423, 'Computer control is paused. Resume control only if authorized by the user.')
+  if (device.relay.state !== 'connected') throw new HTTPError(409, device.links ? 'Cloud forwarding is not connected on this computer. Call its tools directly at links.gateway.' : 'This computer has no usable connection. Ask the user to turn on cloud forwarding in ReadyRig; start a tunnel with tunnel.start only if the user agrees.')
+  const args = await body(req, 2 * 1024 * 1024)
+  const session = 'cloud-api-' + (/^[A-Za-z0-9_.:-]{1,64}$/.exec(req.headers.get('X-Session-ID') || '')?.[0] || 'default')
+  const reply = await relayCall(env, d.id, { tool: name, args, session, client: 'ReadyRig Cloud API' })
+  return json(reply.body, reply.http_status >= 200 && reply.http_status < 600 ? reply.http_status : 502)
+}
 export async function computerAPI(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url), path = url.pathname
   // The public prompt contains only a placeholder credential and no devices.
   if (path === '/api/v1/prompts' && req.method === 'GET') return json({ prompts: [{ name: 'find_computer_links', description: 'Discover and control your computers, then connect directly', content: agentPrompt(env.PUBLIC_ORIGIN, '<READYRIG_TOKEN>', url.searchParams.get('lang') || 'zh-CN') }] })
   const token = await authenticate(req, env)
   if (path === '/api/v1/computers' && req.method === 'GET') return json({ computers: (await computers(env, token)).map(d => summary(d)) })
-  const match = /^\/api\/v1\/computers\/([A-Za-z0-9_-]{43})(\/commands)?$/.exec(path)
-  if (match && (req.method === 'GET' || match[2] && req.method === 'POST')) {
+  const match = /^\/api\/v1\/computers\/([A-Za-z0-9_-]{43})(\/commands|\/tools\/([A-Za-z][A-Za-z0-9_]{0,127}))?$/.exec(path)
+  if (match?.[3] && req.method === 'POST') return relayTool(req, env, await computer(env, token, match[1]), match[3])
+  if (match && !match[3] && (req.method === 'GET' || match[2] && req.method === 'POST')) {
     const device = await computer(env, token, match[1])
     if (match[2] && req.method === 'GET') return json(await commandHistory(env, device.id))
     if (match[2] && req.method === 'POST') return json(await queueCommand(env, device.id, token.user_id, await body(req)), 202)

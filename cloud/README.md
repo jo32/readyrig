@@ -24,7 +24,7 @@ MCP client ──/mcp──▶ Worker ──▶ RelayHub (Durable Object, one pe
 - Computers report `relay: { state, message }` (`off`, `standby`, `connecting`, `connected`, `error`) in the heartbeat snapshot. `GET /api/v1/computers` returns `relay: { state }`, which is `off` for an offline computer.
 - `privacy.set` (payload `{"enabled": boolean}`) turns the computer's privacy mode on or off. Agents (cloud MCP and Bearer API) may only send `enabled: true`; turning it off is accepted only from the owner's signed-in console (`/api/devices/{id}/commands`). Heartbeats report `privacy: { enabled }`, and `GET /api/v1/computers` includes it.
 - `relay.stop` (payload `{}`) turns relay off. There is deliberately no command that turns it on, because that needs the consent of the person at the computer. The app enables it with the local console, `readyrig cloud relay on --yes`, or the terminal dashboard.
-- The cloud REST API does not relay tool calls. Only the MCP tools do, so REST-only agents still need a tunnel.
+- The cloud REST API relays tool calls too: `POST /api/v1/computers/{id}/tools/{tool}` with the Bearer token from the cloud prompt. It uses only the relay, never the tunnel: when a computer has a link, the agent calls `{links.gateway}/api/v1/tools/{tool}` itself, so tool data stays off this service unless relay is connected. The body and response are the computer's own, as on the gateway. `X-Session-ID` is passed on as `cloud-api-<id>`.
 
 The Worker needs the `RELAY` Durable Object binding and the `v1-relay` migration in `wrangler.jsonc` (a SQLite-backed class, so it works on the free plan). `npm run deploy` applies them. Without the binding the service answers `503` to relay connections and apps report that relay mode is unavailable.
 
@@ -91,6 +91,7 @@ Sign in to the console and choose **Copy cloud prompt**. It generates a Bearer c
 | `GET /api/v1/computers/{id}` | Same Bearer token | Refresh one computer and its links |
 | `POST /api/v1/computers/{id}/commands` | Same Bearer token | Queue a computer control change |
 | `GET /api/v1/computers/{id}/commands` | Same Bearer token | Read the latest 30 command receipts, including status and errors |
+| `POST /api/v1/computers/{id}/tools/{tool}` | Same Bearer token | Call a computer tool over a connected relay (`relay.state: "connected"`); `409` when the relay is not connected |
 
 To enable shell access, submit this JSON to the command endpoint:
 
