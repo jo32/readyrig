@@ -218,4 +218,11 @@ html:has(.retro-site) { background: #d8d2c0; }
   .retro-site .hero-film { margin-top: 34px; }
   .retro-site .eyebrow { min-width: min(100%, 200px); font-size: 13px; }
   .retro-site :is(.connection-map, .cloud-onboarding, .use-case-panel, .sharing-card, .connection-example, .download-card, .cli-install, .preview-window, .agent-window, .features-grid, .faq-list) { box-shadow: 4px 4px 0 var(--ink-shadow); }
+  /* The machine row is too narrow to hold the tabs on top of it, so they sit above it */
+  .retro-site .preview-tabs { padding-top: 12px; }
+  .retro-site .preview-tabs > .segmented { position: static; transform: none; width: fit-content; max-width: 100%; margin: 0 auto 6px; }
+  /* The routes run vertically here: a dotted line down to the arrow, label beside it */
+  .retro-site .map-route { height: 34px; gap: 16px; }
+  .retro-site .map-route i { width: 3px; height: 30px; margin: 0; border-top: 0; border-left: 3px dotted var(--line); }
+  .retro-site .map-route i::after { top: auto; bottom: 1px; right: auto; left: -5.5px; transform: rotate(135deg); }
 }
