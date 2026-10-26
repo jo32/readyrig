@@ -207,7 +207,7 @@ test('public prompt discovery has placeholder credentials and working cloud rout
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('Cache-Control'), 'no-store')
     assert.ok(result.prompts[0].content.includes('<READYRIG_TOKEN>'))
-    for (const path of ['/api/v1/computers', '/commands', 'capability.set', 'terminal', 'request_id', '/api/v1/tools/help', '/api/v1/tools/list_projects', 'links.gateway', 'links.mcp']) assert.ok(result.prompts[0].content.includes(path))
+    for (const path of ['/api/v1/computers', '/commands', 'capability.set', 'terminal', 'request_id', '/api/v1/tools/help', 'list_projects', 'links.gateway', 'links.mcp', 'relay.state', '/api/v1/computers/{computer_id}/tools/']) assert.ok(result.prompts[0].content.includes(path))
     assert.ok(!JSON.stringify(result).includes('alice'))
     assert.ok(!JSON.stringify(result).includes('/api/agent/'))
   }
@@ -259,7 +259,9 @@ test('authorized link discovery returns complete public URLs without changing th
   assert.deepEqual(listed.result.computer.links, { gateway: ready.tunnel.gateway, mcp: ready.tunnel.gateway + '/mcp', console: ready.tunnel.gateway + '/app/' })
   assert.equal(listed.result.computer.connection.mode, 'quick')
   assert.ok(!JSON.stringify(listed.result).includes('private-device-secret'))
-  for (const route of ['/connect', '/tools/help']) assert.equal((await call(path + route, 'POST', {}, token.headers)).response.status, 404)
+  assert.equal((await call(path + '/connect', 'POST', {}, token.headers)).response.status, 404)
+  // Without cloud forwarding the cloud carries no tool calls; the agent uses the link itself.
+  assert.equal((await call(path + '/tools/help', 'POST', {}, token.headers)).response.status, 409)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM commands').get()!.n, 0)
 })
 test('discovery hides unavailable links and refreshes temporary links after rotation', async () => {
@@ -929,4 +931,44 @@ test('relay upload addresses stop at the first refused frame and check sizes and
   await call('/api/devices/' + device.id, 'DELETE', undefined, owner())
   receiver.connected = true
   assert.equal((await worker.fetch(new Request(url, { method: 'HEAD' }), env)).status, 404)
+})
+
+test('the cloud credential calls tools over a connected relay and nowhere else', async () => {
+  const d = await register(), token = await access(), relay = fakeRelay(), path = '/api/v1/computers/' + d.id + '/tools/'
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('cloud tool calls must not use the network') }
+  try {
+    // A tunnel link is called by the agent directly, so without the relay the cloud refuses.
+    await beat(d, relaySnapshot('off', { state: 'ready', gateway: 'https://fixture.trycloudflare.com/AbC123xy' }) as any)
+    const direct = await call(path + 'help', 'POST', {}, token.headers)
+    assert.equal(direct.response.status, 409); assert.match(direct.result.error, /links\.gateway/)
+    await beat(d, relaySnapshot('standby') as any)
+    assert.match((await call(path + 'help', 'POST', {}, token.headers)).result.error, /tunnel\.start/)
+    assert.equal(relay.calls.length, 0)
+    await beat(d, relaySnapshot('connected') as any)
+    const ran = await call(path + 'exec_command', 'POST', { command: 'pwd' }, { ...token.headers, 'X-Session-ID': 'task-1' })
+    assert.equal(ran.response.status, 200)
+    assert.deepEqual(ran.result, (relay.reply as any).body)
+    assert.deepEqual(relay.calls, [{ tool: 'exec_command', args: { command: 'pwd' }, session: 'cloud-api-task-1', client: 'ReadyRig Cloud API' }])
+    // The computer's own status and body come back unchanged; an unusable session ID falls back.
+    relay.reply = { http_status: 423, body: { error: 'Capability disabled', status: 'denied' } }
+    const denied = await call(path + 'exec_command', 'POST', { command: 'pwd' }, { ...token.headers, 'X-Session-ID': 'bad id/../x' })
+    assert.equal(denied.response.status, 423); assert.equal(denied.result.status, 'denied')
+    assert.equal(relay.calls.at(-1).session, 'cloud-api-default')
+    relay.reply = { fail: 504, error: 'timeout' }
+    const late = await call(path + 'write_file', 'POST', { path: 'a', content: 'b' }, token.headers)
+    assert.equal(late.response.status, 502); assert.match(late.result.error, /may have occurred/)
+    // Other credentials, owners, origins, names, methods and bodies never reach the computer.
+    const before = relay.calls.length, bob = await access(secondOwner())
+    for (const [headers, status] of [[{}, 401], [d.headers, 401], [bob.headers, 404], [{ ...token.headers, Origin: 'https://evil.example' }, 403]] as const) assert.equal((await call(path + 'help', 'POST', {}, headers)).response.status, status)
+    for (const name of ['..%2Fapi', '_x', 'help/x']) assert.equal((await call(path + name, 'POST', {}, token.headers)).response.status, 404)
+    assert.equal((await call(path + 'help', 'GET', undefined, token.headers)).response.status, 404)
+    assert.equal((await worker.fetch(new Request(origin + path + 'help', { method: 'POST', headers: token.headers, body: '{}' }), env)).status, 415)
+    await beat(d, { ...relaySnapshot('connected'), paused: true } as any)
+    assert.equal((await call(path + 'help', 'POST', {}, token.headers)).response.status, 423)
+    await beat(d, relaySnapshot('connected') as any)
+    db.prepare('UPDATE devices SET last_seen=? WHERE id=?').run(timestamp() - 61, d.id)
+    assert.equal((await call(path + 'help', 'POST', {}, token.headers)).response.status, 409)
+    assert.equal(relay.calls.length, before)
+  } finally { globalThis.fetch = originalFetch }
 })
