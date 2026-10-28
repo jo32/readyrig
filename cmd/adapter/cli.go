@@ -52,6 +52,8 @@ Usage: readyrig [command] [options]
   privacy user|host on|off    Also mask the user name or the computer's host name
   privacy words [NAME=VALUE ...]
                               Replace the custom words to mask (none clears them)
+  env on|off|status            Commands inherit the environment ReadyRig started with (on, the default),
+                              or get only PATH, HOME and a few basics (off). READYRIG_* and RELAY_* stay out
   service install|start|stop|restart|status|uninstall|print
                               Manage a Linux systemd user service
   update / version            Update the binary or print its version
@@ -146,7 +148,7 @@ func manageCLI(mode string, args []string, flags *flag.FlagSet, o *startupOption
 		return true, configureCLI(args, flags, o)
 	case "service":
 		return true, manageService(args, o.DataDir)
-	case "status", "connection", "tools", "call", "projects", "capability", "pause", "resume", "share", "cloud", "privacy":
+	case "status", "connection", "tools", "call", "projects", "capability", "pause", "resume", "share", "cloud", "privacy", "env":
 		method, path, input, session, err := controlAction(mode, args, o)
 		if err != nil {
 			return true, err
@@ -401,6 +403,15 @@ func controlAction(mode string, args []string, o *startupOptions) (method, path 
 			path, input = "/api/privacy", map[string]any{"words": words}
 		default:
 			bad(usage)
+		}
+	case "env":
+		switch {
+		case len(args) == 1 && args[0] == "status":
+			get("/api/command-env")
+		case len(args) == 1 && (args[0] == "on" || args[0] == "off"):
+			path, input = "/api/command-env", map[string]bool{"inherit": args[0] == "on"}
+		default:
+			bad("env on|off|status")
 		}
 	case "cloud":
 		if len(args) == 1 && args[0] == "status" {

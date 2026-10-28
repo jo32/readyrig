@@ -47,6 +47,8 @@ type Server struct {
 	Updates  *update.Manager
 	Tunnel   *tunnel.Manager
 	Cloud    *cloud.Client
+	// CommandEnv decides whether exec_command passes on ReadyRig's environment.
+	CommandEnv *harness.CommandEnv
 	// Transfers receives files; relay uploads reach it through Cloud.
 	Transfers                                 *harness.Transfers
 	CLI                                       *cliinstall.Status
@@ -162,6 +164,7 @@ func (s *Server) UI() http.Handler {
 	s.tunnelRoutes(mux)
 	s.cloudRoutes(mux)
 	s.privacyRoutes(mux)
+	s.commandEnvRoutes(mux)
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		paused, enabled := s.Registry.State()
 		summary, err := s.Store.Summary()
@@ -194,7 +197,7 @@ func (s *Server) UI() http.Handler {
 			cliState = s.CLI
 			localCLI = s.LocalCLI
 		}
-		write(w, map[string]any{"public": remote, "paused": paused, "enabled": enabled, "summary": summary, "sessions": sessions, "tools": s.Registry.Specs(), "permissions": s.Computer.Permissions(), "workspace": s.activeWorkspace(), "project_access": s.projectState(), "local_open": localopen.Supported(), "gateway": gateway, "gateway_origin": origin, "version": buildinfo.Version, "chrome": chrome, "safari": safari, "update": updates, "cloud": cloudState, "cli": cliState, "local_cli": localCLI, "tunnel": s.tunnelStatus(remote), "privacy": s.privacyState(remote)})
+		write(w, map[string]any{"public": remote, "paused": paused, "enabled": enabled, "summary": summary, "sessions": sessions, "tools": s.Registry.Specs(), "permissions": s.Computer.Permissions(), "workspace": s.activeWorkspace(), "project_access": s.projectState(), "local_open": localopen.Supported(), "gateway": gateway, "gateway_origin": origin, "version": buildinfo.Version, "chrome": chrome, "safari": safari, "update": updates, "cloud": cloudState, "cli": cliState, "local_cli": localCLI, "tunnel": s.tunnelStatus(remote), "privacy": s.privacyState(remote), "command_env": s.commandEnvState()})
 	})
 	mux.HandleFunc("POST /api/chrome/refresh", func(w http.ResponseWriter, r *http.Request) {
 		if s.Chrome != nil {

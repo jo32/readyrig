@@ -119,22 +119,49 @@ func TestBackgroundCommandNotifiesWhenDone(t *testing.T) {
 }
 func TestCommandEnvironment(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
-	t.Setenv("SECRET_API_VALUE", "hunter2")
+	t.Setenv("SEC_TOKEN_PATH", "/etc/identity.token")
+	t.Setenv("READYRIG_UPDATE_TOKEN", "hunter2")
+	t.Setenv("RELAY_UPDATE_TOKEN", "hunter3")
+	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("SHELL", "/bin/zsh")
-	r, _ := execForTest(t)
-	out, err := invoke(t, r, "exec_command", map[string]any{"command": "echo \"$PATH|$SECRET_API_VALUE|$SHELL|$USER\""})
+	r, p := execForTest(t)
+	file := filepath.Join(t.TempDir(), "command-env.json")
+	env, err := NewCommandEnv(file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	line := strings.TrimSpace(asMap(t, out)["stdout"].(string))
-	parts := strings.Split(line, "|")
-	if len(parts) != 4 || parts[1] != "" || parts[2] != "/bin/zsh" {
-		t.Fatalf("env: %q", line)
+	p.Env = env
+	echo := func() []string {
+		t.Helper()
+		out, err := invoke(t, r, "exec_command", map[string]any{"command": "echo \"$PATH|$SEC_TOKEN_PATH|$READYRIG_UPDATE_TOKEN$RELAY_UPDATE_TOKEN|$TERM|$SHELL\""})
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts := strings.Split(strings.TrimSpace(asMap(t, out)["stdout"].(string)), "|")
+		if len(parts) != 5 {
+			t.Fatalf("env: %q", parts)
+		}
+		return parts
+	}
+	// By default commands inherit the environment, without ReadyRig's own settings.
+	parts := echo()
+	if parts[1] != "/etc/identity.token" || parts[2] != "" || parts[3] != "dumb" || parts[4] != "/bin/zsh" {
+		t.Fatalf("inherited env: %q", parts)
 	}
 	if _, err := os.Stat("/opt/homebrew/bin"); err == nil && !strings.Contains(parts[0], "/opt/homebrew/bin") {
 		t.Fatalf("homebrew missing from PATH: %s", parts[0])
 	}
-	out, err = invoke(t, r, "exec_command", map[string]any{"command": "echo $0 $-", "login_shell": true})
+	// Turned off, they get only the short list, and the choice is saved.
+	if err := env.SetInherit(false); err != nil {
+		t.Fatal(err)
+	}
+	if parts := echo(); parts[1] != "" || parts[2] != "" || parts[3] != "dumb" || parts[4] != "/bin/zsh" {
+		t.Fatalf("clean env: %q", parts)
+	}
+	if reopened, err := NewCommandEnv(file); err != nil || reopened.Inherit() {
+		t.Fatalf("setting not saved: %v", err)
+	}
+	out, err := invoke(t, r, "exec_command", map[string]any{"command": "echo $0 $-", "login_shell": true})
 	if err != nil || !strings.Contains(asMap(t, out)["stdout"].(string), "sh") {
 		t.Fatalf("login shell: %v %v", out.Value, err)
 	}

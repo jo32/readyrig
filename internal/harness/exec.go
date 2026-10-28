@@ -245,6 +245,8 @@ type Processes struct {
 	SpillDir string
 	// Privacy masks command output as it is read.
 	Privacy *Privacy
+	// Env decides whether commands inherit ReadyRig's environment.
+	Env *CommandEnv
 }
 
 func NewProcesses(root string) *Processes {
@@ -276,9 +278,10 @@ func (p *Processes) Register(r *Registry) {
 	r.Register(Tool{Spec: Spec{Name: "write_stdin", Category: "terminal", Description: "Send input to, or poll, an exec_command session. An empty chars polls and returns unread output. yield_time_ms (max 45000) is the longest wait and the call returns early if the process exits, so use a long value to wait for completion (25000 works everywhere). A wait your client abandons does not stop the command. return_on=output also returns when new output arrives. terminate=true kills the process (a normal result with terminated:true); close_stdin sends EOF.", Mutating: true, Parallel: true, InputSchema: Schema(map[string]any{"session_id": Prop("string", "Process session_id from exec_command"), "chars": Prop("string", "Input bytes"), "yield_time_ms": limited("integer", "Longest wait for output, default 1000, max 45000", 0, maxPollWait), "return_on": enum("timeout (default) waits the full time unless the process exits; output returns as soon as new output arrives, a long poll for following logs", "timeout", "output"), "terminate": Prop("boolean", "Cancel process"), "close_stdin": Prop("boolean", "Close stdin")}, "session_id")}, Run: p.tagged(p.input)})
 }
 
-// commandEnv keeps secrets out of children but gives them a usable PATH: apps
-// launched from the desktop inherit only /usr/bin:/bin.
-func commandEnv() []string {
+// commandEnv gives children a usable PATH: apps launched from the desktop
+// inherit only /usr/bin:/bin. With inherit they also get ReadyRig's environment
+// (see CommandEnv); without it only these few variables, keeping secrets out.
+func commandEnv(inherit bool) []string {
 	home := os.Getenv("HOME")
 	path := os.Getenv("PATH")
 	seen := map[string]bool{}
@@ -301,10 +304,17 @@ func commandEnv() []string {
 			seen[d] = true
 		}
 	}
-	env := []string{"PATH=" + path, "HOME=" + home, "LANG=en_US.UTF-8", "DEBIAN_FRONTEND=noninteractive", "TERM=dumb"}
-	for _, k := range []string{"USER", "LOGNAME", "SHELL", "TMPDIR"} {
-		if v := os.Getenv(k); v != "" {
-			env = append(env, k+"="+v)
+	var env []string
+	if inherit {
+		env = inheritedEnv()
+	}
+	// Later entries win, so these replace inherited values: there is no PTY.
+	env = append(env, "PATH="+path, "HOME="+home, "LANG=en_US.UTF-8", "DEBIAN_FRONTEND=noninteractive", "TERM=dumb")
+	if !inherit {
+		for _, k := range []string{"USER", "LOGNAME", "SHELL", "TMPDIR"} {
+			if v := os.Getenv(k); v != "" {
+				env = append(env, k+"="+v)
+			}
 		}
 	}
 	return env
@@ -434,7 +444,7 @@ func (p *Processes) start(ctx context.Context, in Invocation) (Output, error) {
 	}
 	cmd := exec.CommandContext(processCtx, shell, append(flags, a.Command)...)
 	cmd.Dir = cwd
-	cmd.Env = commandEnv()
+	cmd.Env = commandEnv(p.Env.Inherit())
 	for k, v := range a.Env {
 		if k == "" || strings.ContainsAny(k, "=\x00") {
 			cancel()
