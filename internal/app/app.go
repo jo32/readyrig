@@ -107,6 +107,14 @@ func New(workspace, dataDir string) (*App, error) {
 	processes.Projects = projects
 	processes.SpillDir = spillDir
 	processes.Privacy = privacy
+	commandEnv, err := harness.NewCommandEnv(filepath.Join(dataDir, "command-env.json"))
+	if err != nil {
+		files.Close()
+		s.Close()
+		return nil, err
+	}
+	commandEnv.OnChange = registry.Signal
+	processes.Env = commandEnv
 	c := computer.New(filepath.Join(dataDir, "screenshots"))
 	files.Register(registry)
 	transfers := harness.NewTransfers(files)
@@ -149,7 +157,7 @@ func New(workspace, dataDir string) (*App, error) {
 	}
 	sharing := tunnel.New(tunnel.Options{Dir: filepath.Join(dataDir, "cloudflared"), Changed: registry.Signal, RedactSecrets: registry.AddSecrets})
 	ready = true
-	return &App{unlock: unlock, Server: &server.Server{Registry: registry, Projects: projects, Privacy: privacy, Store: s, Computer: c, Chrome: chrome, Safari: safari, Tunnel: sharing, Transfers: transfers, Workspace: workspace, AccessPath: accessPath, UIKey: uiKey}, Processes: processes, Files: files, Transfers: transfers, Chrome: chrome, Safari: safari}, nil
+	return &App{unlock: unlock, Server: &server.Server{Registry: registry, Projects: projects, Privacy: privacy, CommandEnv: commandEnv, Store: s, Computer: c, Chrome: chrome, Safari: safari, Tunnel: sharing, Transfers: transfers, Workspace: workspace, AccessPath: accessPath, UIKey: uiKey}, Processes: processes, Files: files, Transfers: transfers, Chrome: chrome, Safari: safari}, nil
 }
 func (a *App) Close() {
 	if a.Server.Cloud != nil {

@@ -42,6 +42,9 @@ type tuiState struct {
 	Privacy struct {
 		Enabled bool `json:"enabled"`
 	} `json:"privacy"`
+	CommandEnv struct {
+		Inherit bool `json:"inherit"`
+	} `json:"command_env"`
 }
 
 type terminalUI struct {
@@ -194,6 +197,8 @@ func runTUI(f *flag.FlagSet, o *startupOptions) error {
 				u.request("/api/pause", map[string]bool{"paused": !u.state.Paused}, results)
 			case "x":
 				u.request("/api/privacy", map[string]bool{"enabled": !u.state.Privacy.Enabled}, results)
+			case "e":
+				u.request("/api/command-env", map[string]bool{"inherit": !u.state.CommandEnv.Inherit}, results)
 			case "f", "t", "b", "w", "c":
 				category := map[string]string{"f": "files", "t": "terminal", "b": "browser", "w": "safari", "c": "computer"}[key]
 				u.request("/api/capability", map[string]any{"category": category, "enabled": !u.state.Enabled[category]}, results)
@@ -421,7 +426,7 @@ func (u *terminalUI) render(width, height int) string {
 	} else {
 		switch u.tab {
 		case 0:
-			lines = append(lines, "  Workspace   "+terminalText(u.state.Workspace), "  Agent API   "+terminalText(u.state.Gateway), "  MCP         "+terminalText(u.state.Gateway+"/mcp"), "  Dashboard   "+terminalText(u.info.Dashboard), "", "  Tools       files "+onOff(u.state.Enabled["files"])+"   terminal "+onOff(u.state.Enabled["terminal"])+"   browser "+onOff(u.state.Enabled["browser"])+"   computer "+onOff(u.state.Enabled["computer"]), "  Chrome      "+terminalText(u.state.Chrome.State), "  Sharing     "+terminalText(u.state.Tunnel.State+" "+u.state.Tunnel.URL), "  Privacy     "+onOff(u.state.Privacy.Enabled)+"  (agents see ${RR_*} tokens instead of local folders)", "", "  f files   t terminal   b browser   c computer", "  h sharing   p pause/resume   x privacy   s start/stop")
+			lines = append(lines, "  Workspace   "+terminalText(u.state.Workspace), "  Agent API   "+terminalText(u.state.Gateway), "  MCP         "+terminalText(u.state.Gateway+"/mcp"), "  Dashboard   "+terminalText(u.info.Dashboard), "", "  Tools       files "+onOff(u.state.Enabled["files"])+"   terminal "+onOff(u.state.Enabled["terminal"])+"   browser "+onOff(u.state.Enabled["browser"])+"   computer "+onOff(u.state.Enabled["computer"]), "  Chrome      "+terminalText(u.state.Chrome.State), "  Sharing     "+terminalText(u.state.Tunnel.State+" "+u.state.Tunnel.URL), "  Privacy     "+onOff(u.state.Privacy.Enabled)+"  (agents see ${RR_*} tokens instead of local folders)", "  Env         "+onOff(u.state.CommandEnv.Inherit)+"  (commands inherit ReadyRig's environment)", "", "  f files   t terminal   b browser   c computer", "  h sharing   p pause/resume   x privacy   e env   s start/stop")
 		case 1:
 			lines = append(lines, "  a add folder   Enter use selected   d remove access", "")
 			start := max(0, u.selected-available+3)

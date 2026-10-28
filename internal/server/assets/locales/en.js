@@ -651,6 +651,8 @@ const readyRigEnglish = {
   "开启云端转发前，请确认数据将经 ReadyRig 云端服务器转发": "Before turning on cloud forwarding, confirm that your data will pass through ReadyRig cloud servers",
   "待命 · 直连链接正常，云端转发未连接": "Standby · The direct link works, so cloud forwarding is not connected",
   "隐藏信息": "Hide My Info",
+  "传递环境变量": "Pass Environment",
+  "命令带上 ReadyRig 启动时的环境变量，和在终端里一样。关闭后只带 PATH 等少数几个。": "Commands get the environment variables ReadyRig started with, as in your terminal. Off: only PATH and a few basics.",
   "Agent 只看到代号，看不到你的名字和路径。": "Agents see stand-ins, not your name or file paths. Tools still work.",
   "正在隐藏：{0}": "Hiding: {0}",
   "主目录": "home folder",
