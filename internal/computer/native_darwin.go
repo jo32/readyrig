@@ -47,7 +47,7 @@ static void cfUTF8(CFStringRef s,char *out,size_t n){
   for(char *q=out;*q;q++) if(*q=='\t'||*q=='\n'||*q=='\r') *q=' ';
 }
 
-// One line per window, front to back: pid, owner, title, x, y, w, h, layer.
+// One line per window, front to back: pid, owner, title, x, y, w, h, layer, number.
 static char *windowList(void){
   CFArrayRef arr=CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly|kCGWindowListExcludeDesktopElements,kCGNullWindowID);
   if(!arr) return NULL;
@@ -57,11 +57,12 @@ static char *windowList(void){
     CFDictionaryRef d=(CFDictionaryRef)CFArrayGetValueAtIndex(arr,i);
     int layer=0,pid=0; CFNumberRef ln=(CFNumberRef)CFDictionaryGetValue(d,kCGWindowLayer); if(ln) CFNumberGetValue(ln,kCFNumberIntType,&layer);
     CFNumberRef pn=(CFNumberRef)CFDictionaryGetValue(d,kCGWindowOwnerPID); if(pn) CFNumberGetValue(pn,kCFNumberIntType,&pid);
+    int num=0; CFNumberRef wn=(CFNumberRef)CFDictionaryGetValue(d,kCGWindowNumber); if(wn) CFNumberGetValue(wn,kCFNumberIntType,&num);
     char owner[256],title[512];
     cfUTF8((CFStringRef)CFDictionaryGetValue(d,kCGWindowOwnerName),owner,sizeof owner);
     cfUTF8((CFStringRef)CFDictionaryGetValue(d,kCGWindowName),title,sizeof title);
     CGRect r=CGRectZero; CFDictionaryRef bd=(CFDictionaryRef)CFDictionaryGetValue(d,kCGWindowBounds); if(bd) CGRectMakeWithDictionaryRepresentation(bd,&r);
-    char line[1024]; snprintf(line,sizeof line,"%d\t%s\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%d\n",pid,owner,title,r.origin.x,r.origin.y,r.size.width,r.size.height,layer);
+    char line[1024]; snprintf(line,sizeof line,"%d\t%s\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%d\t%d\n",pid,owner,title,r.origin.x,r.origin.y,r.size.width,r.size.height,layer,num);
     sbAdd(&b,line);
   }
   CFRelease(arr);
@@ -190,6 +191,26 @@ func (d nativeDriver) Capture(ctx context.Context, display int) ([]byte, Bounds,
 	}
 	b, err := os.ReadFile(name)
 	return b, displays[display-1], err
+}
+
+// CaptureWindow uses screencapture -l, which draws the window alone: windows in
+// front of it do not show. -o leaves out its shadow so the image is its bounds.
+func (nativeDriver) CaptureWindow(ctx context.Context, id int) ([]byte, error) {
+	if C.screenAllowed() == 0 {
+		return nil, errors.New("allow this program in macOS System Settings → Privacy & Security → Screen & System Audio Recording, then restart it")
+	}
+	f, err := os.CreateTemp("", "adapter-window-*.png")
+	if err != nil {
+		return nil, err
+	}
+	name := f.Name()
+	f.Close()
+	defer os.Remove(name)
+	cmd := exec.CommandContext(ctx, "/usr/sbin/screencapture", "-x", "-o", "-l", strconv.Itoa(id), "-t", "png", name)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("window capture: %w: %s", err, b)
+	}
+	return os.ReadFile(name)
 }
 func (nativeDriver) Input(ctx context.Context, a Action) error {
 	if C.inputAllowed() == 0 {
@@ -322,13 +343,14 @@ func rawWindows() ([]Window, error) {
 	var out []Window
 	for _, line := range strings.Split(C.GoString(raw), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) != 8 {
+		if len(f) != 9 {
 			continue
 		}
 		num := func(s string) float64 { v, _ := strconv.ParseFloat(s, 64); return v }
 		pid, _ := strconv.Atoi(f[0])
 		layer, _ := strconv.Atoi(f[7])
-		out = append(out, Window{PID: pid, App: f[1], Title: f[2], X: num(f[3]), Y: num(f[4]), Width: num(f[5]), Height: num(f[6]), Layer: layer})
+		id, _ := strconv.Atoi(f[8])
+		out = append(out, Window{ID: id, PID: pid, App: f[1], Title: f[2], X: num(f[3]), Y: num(f[4]), Width: num(f[5]), Height: num(f[6]), Layer: layer})
 	}
 	return out, nil
 }

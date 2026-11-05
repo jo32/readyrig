@@ -18,7 +18,7 @@ import (
 const (
 	// toolListBudget bounds the tools/list payload of the native tools (the
 	// Chrome tools come from the upstream server and are measured separately).
-	toolListBudget = 18500
+	toolListBudget = 18800
 	// toolBudget bounds one tool's definition; descriptionBudget its description.
 	toolBudget        = 2700
 	descriptionBudget = 560

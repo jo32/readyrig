@@ -28,6 +28,8 @@ type fakeDriver struct {
 	windows     []Window
 	tree        UITree
 	opened      string
+	// windowCaptures counts CaptureWindow calls.
+	windowCaptures int
 }
 
 func newFake() *fakeDriver {
@@ -48,6 +50,20 @@ func (f *fakeDriver) Capture(_ context.Context, display int) ([]byte, Bounds, er
 	var b bytes.Buffer
 	png.Encode(&b, im)
 	return b.Bytes(), f.bounds, nil
+}
+func (f *fakeDriver) CaptureWindow(_ context.Context, id int) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.windowCaptures++
+	scale := float64(f.pixels[0]) / f.bounds.Width
+	for _, w := range f.windows {
+		if w.ID == id {
+			var b bytes.Buffer
+			png.Encode(&b, image.NewRGBA(image.Rect(0, 0, int(w.Width*scale), int(w.Height*scale))))
+			return b.Bytes(), nil
+		}
+	}
+	return nil, errors.New("no such window")
 }
 func (f *fakeDriver) Input(_ context.Context, a Action) error {
 	f.mu.Lock()
@@ -389,4 +405,78 @@ func TestActionSchemaDeclaresActionNames(t *testing.T) {
 		return
 	}
 	t.Fatal("computer_action not registered")
+}
+func TestAppScreenshotCapturesTheWindow(t *testing.T) {
+	d := newFake() // 500x250 pt display, 2 px per pt
+	d.windows = []Window{
+		{ID: 1, App: "Google Chrome", Title: "Docs", X: 0, Y: 0, Width: 100, Height: 100, Frontmost: true},
+		{ID: 2, App: "Simulator", X: 0, Y: 0, Width: 8, Height: 8},
+		{ID: 3, App: "Simulator", Title: "iPhone 17", X: 50, Y: 50, Width: 200, Height: 100},
+		{ID: 4, App: "Simulator", Title: "Apple TV", X: 300, Y: 50, Width: 150, Height: 100},
+	}
+	c := newComputer(t, d)
+	click := func(frameID any, p []int) []float64 {
+		t.Helper()
+		if _, err := c.action(context.Background(), inv("s", map[string]any{"action": "left_click", "frame_id": frameID, "coordinate": p, "capture_after": false})); err != nil {
+			t.Fatal(err)
+		}
+		return d.inputs[len(d.inputs)-1].Coordinate
+	}
+	v := shot(t, c, "s", map[string]any{"app": "simulator"})
+	if size := v["image_size"].([]int); size[0] != 400 || size[1] != 200 {
+		t.Fatalf("window frame is %v px, want 400x200", size)
+	}
+	if d.windowCaptures != 1 || d.captures != 0 {
+		t.Fatalf("captured the display %d times and the window %d times", d.captures, d.windowCaptures)
+	}
+	if win := v["window"].(map[string]any); win["title"] != "iPhone 17" {
+		t.Fatalf("picked %v, want the frontmost real window", win)
+	}
+	if cov, _ := v["covered_by"].([]string); len(cov) != 1 || cov[0] != "Google Chrome" {
+		t.Fatalf("covered_by %v", v["covered_by"])
+	}
+	if s := v["screen_size"].([]float64); s[0] != 500 || s[1] != 250 {
+		t.Fatalf("screen_size %v", s)
+	}
+	if got := click(v["frame_id"], []int{0, 0}); got[0] != 50 || got[1] != 50 {
+		t.Fatalf("window corner landed at %v", got)
+	}
+	if got := click(v["frame_id"], []int{200, 100}); got[0] != 150 || got[1] != 100 {
+		t.Fatalf("window middle landed at %v", got)
+	}
+	// A region of a window frame comes from the window again, not from the screen.
+	zoom := shot(t, c, "s", map[string]any{"region": []float64{200, 100, 400, 200}, "frame_id": v["frame_id"]})
+	if size := zoom["image_size"].([]int); size[0] != 200 || size[1] != 100 || d.windowCaptures != 2 || d.captures != 0 {
+		t.Fatalf("zoom %v px, window captures %d, display captures %d", size, d.windowCaptures, d.captures)
+	}
+	if got := click(zoom["frame_id"], []int{0, 0}); got[0] != 150 || got[1] != 100 {
+		t.Fatalf("zoomed window click landed at %v", got)
+	}
+	tv := shot(t, c, "s", map[string]any{"app": "Simulator", "window": "apple tv"})
+	if tv["window"].(map[string]any)["title"] != "Apple TV" || tv["covered_by"] != nil {
+		t.Fatalf("window by title: %v", tv)
+	}
+	// A window partly off the display is still captured whole.
+	d.windows = []Window{{ID: 5, App: "Wide", X: 400, Y: 200, Width: 300, Height: 300}}
+	if size := shot(t, c, "s", map[string]any{"app": "wide"})["image_size"].([]int); size[0] != 600 || size[1] != 600 {
+		t.Fatalf("partly hidden window is %v px", size)
+	}
+	d.windows = append(d.windows, Window{ID: 3, App: "Simulator", Title: "iPhone 17", X: 50, Y: 50, Width: 200, Height: 100})
+	for _, args := range []map[string]any{
+		{"app": "Missing"},
+		{"app": "Simulator", "window": "nope"},
+		{"window": "iPhone"},
+		{"app": "Simulator", "display": 1},
+		{"app": "Simulator", "region": []float64{0, 0, 5, 5}, "frame_id": v["frame_id"]},
+	} {
+		if _, err := c.screenshot(context.Background(), inv("s", args)); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+	for _, w := range []Window{{ID: 6, App: "Offscreen", X: 900, Y: 900, Width: 100, Height: 100}, {App: "Numberless", Width: 100, Height: 100}} {
+		d.windows = []Window{w}
+		if _, err := c.screenshot(context.Background(), inv("s", map[string]any{"app": w.App})); err == nil {
+			t.Fatalf("%s window accepted", w.App)
+		}
+	}
 }
