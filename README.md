@@ -320,7 +320,7 @@ REST, MCP, OpenAPI, and the console share one tool registry.
 | `use_tool` | Runs any tool by name, including advanced tools not listed by `tools/list` | Concurrent |
 | `batch` | Runs up to 12 tools in one request; read-only batches run in parallel | Concurrent |
 | `list_projects` | Read-only project folders, default, and Full Access status | Concurrent; available while paused |
-| `read_file` | Line-numbered, paged text reads; images as image content; Base64 | Concurrent |
+| `read_file` | Line-numbered, paged text reads; images as image content, scaled down or zoomed in on the computer; Base64 | Concurrent |
 | `write_file` | Atomic writes, parent directories, permissions kept, `create_only` | Serial (files) |
 | `edit_file` | Exact-match replacement in an existing file | Serial (files) |
 | `list_directory` | Entries with depth, glob filter, sorting; skips ignored paths when recursing | Concurrent |
@@ -331,7 +331,7 @@ REST, MCP, OpenAPI, and the console share one tool registry.
 | `exec_command` | Commands with cwd, environment, login shell, background mode, and head-and-tail output | Concurrent |
 | `write_stdin` | Input, polling (optionally a long poll for new output), stdin closure, and process termination | Concurrent |
 | `list_tasks` | This session's command sessions: elapsed time, output size, time since last output, exit code; can wait for one or all running jobs | Concurrent |
-| `computer_screenshot` | JPEG of a display (longest edge 1,280 pixels) or a zoomed region of an earlier frame | Serial (computer) |
+| `computer_screenshot` | JPEG of a display or of one app's window (longest edge 1,280 pixels), or a zoomed region of an earlier frame | Serial (computer) |
 | `computer_action` | Mouse, keyboard, scroll, drag, paste, and wait; one action or a chained `actions[]` batch | Serial (computer) |
 | `computer_ui_tree` | Accessibility elements with refs that `computer_action` can click | Serial (computer) |
 | `computer_app` | List windows; open or focus an application | Serial (computer) |
@@ -355,7 +355,7 @@ Use `{"name":"exec_command"}` to inspect one tool even when disabled, or `{"incl
 
 ### File tools
 
-- `read_file` returns `cat -n` style numbered lines, up to 2,000 lines or 128 KiB per call, and names the `start_line` that continues a longer file. `start_line`, `end_line`, and `limit` page through it, and the result reports `total_lines`. PNG, JPEG, GIF, and WebP files (up to 5 MiB) come back as image content. Use `encoding: "base64"` for other binary data.
+- `read_file` returns `cat -n` style numbered lines, up to 2,000 lines or 128 KiB per call, and names the `start_line` that continues a longer file. `start_line`, `end_line`, and `limit` page through it, and the result reports `total_lines`. PNG, JPEG, GIF, and WebP files (up to 64 MiB and 50 megapixels) come back as image content. One that is at most `max_size` pixels on its longest edge (default 1,568, what the model looks at) and at most 1 MiB is sent unchanged; a larger one is scaled down on the computer and sent as JPEG, or as PNG when it has transparency, and the result reports `original_size`. `region: [x1,y1,x2,y2]`, in the original's pixels, sends that area at full resolution. Use `encoding: "base64"` for other binary data.
 - `edit_file` replaces `old_string` with `new_string` and fails unless it matches exactly once; `replace_all` replaces every match. It keeps file permissions and CRLF line endings and returns the first changed line with a numbered snippet. `write_file` keeps the permissions of an existing file, creates new files as 0644, and refuses to overwrite with `create_only`.
 - `list_directory` accepts `depth` (up to 8), `pattern`, `type`, `sort` (`name`, `modified`, `size`), and `limit`. `glob` finds files by pattern such as `**/*.go` or `*.{md,txt}`. When they recurse, both skip `.git`, `node_modules`, and paths excluded by `.gitignore` files (nested files and negation included) unless `no_ignore` is set.
 - `search_files` is literal by default. `regex` selects RE2 expressions; `case_insensitive`, `include`, `context` (0-5 lines), and `output: "files"` refine it. At most `max_results` matches are returned; a truncated result carries `next_offset` to pass back as `offset`.
@@ -470,7 +470,7 @@ Supported actions: `mouse_move`, `left_click`, `right_click`, `middle_click`, `d
 
 - **Batches.** `actions: [...]` runs up to 25 steps in order in one call (each with the same fields as a single action; the top-level `frame_id` is their default) and takes one screenshot at the end. Every step is validated before any runs. If a step fails, the error names it and the result reports `completed`.
 - **Settling.** The screenshot returned after an action is taken once two consecutive captures are identical, waiting at most `settle_ms` (default 1,000; `0` captures after a fixed 200 ms). `capture_after: false` skips it.
-- **Zoom and displays.** `computer_screenshot` with `region: [x1,y1,x2,y2]` and the `frame_id` it refers to returns that area at full resolution as a new frame, and coordinates in it map back to the screen. `display` selects a monitor; frames from a second monitor map to its position in the global coordinate space.
+- **Zoom and displays.** `computer_screenshot` with `region: [x1,y1,x2,y2]` and the `frame_id` it refers to returns that area at full resolution as a new frame, and coordinates in it map back to the screen. `display` selects a monitor; frames from a second monitor map to its position in the global coordinate space. `app` (with `window`, a title substring, to choose among its windows) captures only that app's frontmost window, on its own: windows in front of it do not show. Coordinates in the frame map back to the screen as usual, and a `region` of it is cut from the window again; `covered_by` lists the apps whose windows are in front of it, where a click would land instead.
 - **Accessibility.** `computer_ui_tree` lists an application's buttons, fields, menu items, and text with refs (`e12`). Pass `element: "e12"` to `computer_action` instead of a coordinate. Refs belong to the session that listed them and last five minutes. This needs the Accessibility permission, and window titles in `computer_app` need Screen Recording. A tool that lacks its macOS permission fails at once with `permission_required`, naming the permission to enable, and `help` lists it as unavailable with that reason.
 - **Clipboard and apps.** `computer_clipboard` reads or replaces the clipboard text (it is recorded in the activity log); `computer_app` lists windows and opens or focuses an application by name.
 

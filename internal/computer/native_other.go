@@ -17,7 +17,8 @@ func (nativeDriver) Displays() []Bounds       { return nil }
 func (nativeDriver) Capture(context.Context, int) ([]byte, Bounds, error) {
 	return nil, Bounds{}, errUnsupported
 }
-func (nativeDriver) Input(context.Context, Action) error { return errUnsupported }
+func (nativeDriver) CaptureWindow(context.Context, int) ([]byte, error) { return nil, errUnsupported }
+func (nativeDriver) Input(context.Context, Action) error                { return errUnsupported }
 func (nativeDriver) Clipboard(context.Context, *string) (string, error) {
 	return "", errUnsupported
 }

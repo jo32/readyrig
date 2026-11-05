@@ -26,7 +26,6 @@ const (
 	maxReadBytes     = 128 * 1024
 	maxLineBytes     = 2000
 	countBudget      = 16 << 20
-	maxImageBytes    = 5 << 20
 	spillPrefix      = "spill:"
 )
 
@@ -93,7 +92,7 @@ func limited(kind, description string, min, max int) map[string]any {
 var projectProp = Prop("string", "Project id or name (rarely needed)")
 
 func (f *Files) Register(r *Registry) {
-	r.Register(Tool{Spec: Spec{Name: "read_file", Category: "files", Description: "Read a text file as numbered lines (cat -n style). Up to 2000 lines or 128 KiB per call; a longer file reports the start_line that continues it, so page with start_line/end_line/limit. Images come back as images; use encoding=base64 only for other binary data. Paths are project-relative or absolute inside a project; spill:<name> reads saved command output.", Parallel: true, InputSchema: Schema(map[string]any{"project": projectProp, "path": Prop("string", "File path, or spill:<name> for saved command output"), "start_line": limited("integer", "First line to return, 1-based (default 1)", 0, 1<<31-1), "end_line": limited("integer", "Last line to return, inclusive", 0, 1<<31-1), "limit": limited("integer", "Maximum number of lines to return (default 2000)", 0, 1<<31-1), "encoding": enum("utf8 (default) or base64", "utf8", "base64")}, "path")}, Run: f.tagged(f.read)})
+	r.Register(Tool{Spec: Spec{Name: "read_file", Category: "files", Description: "Read a text file as numbered lines, or an image (PNG, JPEG, GIF, WebP) as a picture you can see. Text: up to 2000 lines or 128 KiB per call; a longer file reports the start_line that continues it, so page with start_line/end_line/limit. Images are scaled to max_size px (default 1568); region zooms in. Use encoding=base64 only for other binary data. Paths are project-relative or absolute inside a project; spill:<name> reads saved command output.", Parallel: true, InputSchema: Schema(map[string]any{"project": projectProp, "path": Prop("string", "File path, or spill:<name> for saved command output"), "start_line": limited("integer", "First line to return, 1-based (default 1)", 0, 1<<31-1), "end_line": limited("integer", "Last line to return, inclusive", 0, 1<<31-1), "limit": limited("integer", "Maximum number of lines to return (default 2000)", 0, 1<<31-1), "encoding": enum("utf8 (default) or base64", "utf8", "base64"), "max_size": limited("integer", "Image long edge, px", minImageEdge, maxImageEdge), "region": map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "description": "Image area [x1,y1,x2,y2] in px"}}, "path")}, Run: f.tagged(f.read)})
 	r.Register(Tool{Spec: Spec{Name: "write_file", Category: "files", Description: "Create or replace a file (atomic, creates parent directories, keeps permissions). For partial changes use edit_file. create_only=true refuses to overwrite. Max 1 MiB.", Mutating: true, InputSchema: Schema(map[string]any{"project": projectProp, "path": Prop("string", "File path"), "content": Prop("string", "Text or base64 content"), "encoding": enum("utf8 (default) or base64", "utf8", "base64"), "create_only": Prop("boolean", "Fail if the file already exists")}, "path", "content")}, Run: f.tagged(f.write)})
 	r.Register(Tool{Spec: Spec{Name: "edit_file", Category: "files", Description: "Replace old_string with new_string in an existing file. old_string must match exactly once (add surrounding lines to make it unique) unless replace_all=true. Returns the first changed line and a snippet.", Mutating: true, InputSchema: Schema(map[string]any{"project": projectProp, "path": Prop("string", "File path"), "old_string": Prop("string", "Exact text to find (non-empty)"), "new_string": Prop("string", "Replacement text; may be empty to delete"), "replace_all": Prop("boolean", "Replace every occurrence instead of requiring a unique match")}, "path", "old_string", "new_string")}, Run: f.tagged(f.edit)})
 	r.Register(Tool{Spec: Spec{Name: "list_directory", Category: "files", Description: "List a directory in name order. depth>1 recurses (max 8) and then skips .gitignore'd paths, .git and node_modules unless no_ignore. pattern is a glob ('*.go', 'src/**/*.ts'); type=file|dir; sort=name|modified|size; limit defaults to 1000.", Parallel: true, InputSchema: Schema(map[string]any{"project": projectProp, "path": Prop("string", "Directory, default ."), "depth": limited("integer", "Levels to list, default 1", 1, 8), "pattern": Prop("string", "Glob filter; without a slash it matches names at any depth"), "type": enum("Only files or only directories", "file", "dir"), "sort": enum("Order of results, default name", "name", "modified", "size"), "limit": limited("integer", "Maximum entries, default 1000", 1, 5000), "no_ignore": Prop("boolean", "Do not skip ignored paths when recursing")})}, Run: f.tagged(f.list)})
@@ -150,12 +149,14 @@ func numbered(first int, lines []string) string {
 }
 func (f *Files) read(ctx context.Context, in Invocation) (Output, error) {
 	var a struct {
-		Path     string `json:"path"`
-		Project  string `json:"project"`
-		Start    int    `json:"start_line"`
-		End      int    `json:"end_line"`
-		Limit    int    `json:"limit"`
-		Encoding string `json:"encoding"`
+		Path     string    `json:"path"`
+		Project  string    `json:"project"`
+		Start    int       `json:"start_line"`
+		End      int       `json:"end_line"`
+		Limit    int       `json:"limit"`
+		Encoding string    `json:"encoding"`
+		MaxSize  int       `json:"max_size"`
+		Region   []float64 `json:"region"`
 	}
 	if err := Decode(in.Arguments, &a); err != nil {
 		return Output{}, err
@@ -184,15 +185,31 @@ func (f *Files) read(ctx context.Context, in Invocation) (Output, error) {
 		return Output{}, errors.New("only regular files can be read")
 	}
 	resolved := filepath.Join(root.Name(), path)
-	if mime, ok := imageTypes[strings.ToLower(filepath.Ext(path))]; ok && a.Encoding == "" {
-		if info.Size() > maxImageBytes {
-			return Output{}, errors.New("image larger than 5 MiB; use encoding=base64 or resize it")
+	mime, isImage := imageTypes[strings.ToLower(filepath.Ext(path))]
+	if (a.MaxSize != 0 || len(a.Region) > 0) && (!isImage || a.Encoding != "") {
+		return Output{}, errors.New("max_size and region apply only to images read without encoding")
+	}
+	if isImage && a.Encoding == "" {
+		if info.Size() > maxImageInput {
+			return Output{}, fmt.Errorf("image larger than %d MiB", maxImageInput>>20)
 		}
-		b, err := io.ReadAll(io.LimitReader(file, maxImageBytes+1))
+		b, err := io.ReadAll(io.LimitReader(file, maxImageInput+1))
 		if err != nil {
 			return Output{}, err
 		}
-		return Output{Value: map[string]any{"resolved_path": resolved, "size": info.Size(), "mime": mime, "image": true}, Images: []Image{{MIME: mime, Data: base64.StdEncoding.EncodeToString(b)}}}, ctx.Err()
+		img, err := prepareImage(b, mime, imageRequest{MaxSize: a.MaxSize, Region: a.Region})
+		if err != nil {
+			return Output{}, err
+		}
+		value := map[string]any{"resolved_path": resolved, "size": info.Size(), "mime": img.MIME, "image": true}
+		if img.Width > 0 {
+			value["image_size"] = []int{img.Width, img.Height}
+		}
+		if img.Changed {
+			value["original_size"] = []int{img.OrigW, img.OrigH}
+			value["sent_bytes"] = len(img.Data)
+		}
+		return Output{Value: value, Images: []Image{{MIME: img.MIME, Data: base64.StdEncoding.EncodeToString(img.Data)}}}, ctx.Err()
 	}
 	if a.Encoding == "base64" {
 		b, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
