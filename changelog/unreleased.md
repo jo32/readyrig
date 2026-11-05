@@ -1,11 +1,1 @@
 # Unreleased
-
-## Changed
-
-- **Agents see images with `read_file` instead of taking screenshots.** Compact tool listings show only the first sentence of a description, and `read_file`'s said "Read a text file". An agent that had lost earlier context therefore printed images as base64 text, or opened them in Preview and captured the whole screen. The first sentence now says images come back as pictures, and `computer_screenshot` points to `read_file` for image files.
-- **`read_file` scales images on the computer.** An image larger than `max_size` pixels on its longest edge (default 1,568, the size the model looks at) or over 1 MiB is scaled down and sent as JPEG, or as PNG when it has transparency, so a phone or 5K screenshot no longer travels at full size or fails at 5 MiB. A 1206×2622 simulator screenshot goes from 1.6 MB to 150 KB. Files up to 64 MiB are accepted. `region: [x1,y1,x2,y2]` sends an area of the original at full resolution. Smaller images are sent unchanged.
-- **Tool definitions budget raised from 18,500 to 18,800 bytes.** `max_size`, `region`, `app` and `window` and the image wording add 470 bytes to `tools/list` (18,318 → 18,788). One avoided base64 detour saves far more: it cost about 120 KB of text in the session that prompted this change.
-
-## Added
-
-- **Screenshot one window.** `computer_screenshot` takes `app` (and `window`, a title substring) to capture only that app's frontmost window with `screencapture -l`: its own pixels, without windows in front of it, the rest of the screen or its shadow. Coordinates in the frame work with `computer_action` as usual, and a `region` of it is cut from the window again. `covered_by` names the apps whose windows are in front of it, where a click would land instead.
