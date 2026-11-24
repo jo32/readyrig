@@ -352,3 +352,21 @@ func TestChromeAndSafariSwitchesAreIndependent(t *testing.T) {
 		t.Fatal("a Safari call ran with the Safari switch off")
 	}
 }
+
+// childRecords reads what a helper process wrote, one JSON value per line.
+func childRecords(path string) []map[string]any {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var out []map[string]any
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var v map[string]any
+		if json.Unmarshal(scanner.Bytes(), &v) == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}

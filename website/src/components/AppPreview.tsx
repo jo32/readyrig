@@ -57,7 +57,7 @@ const capabilitiesData: { key: string; icon: IconName; title: string; descriptio
   { key: 'files', icon: 'folder', title: '文件', description: '读取、编辑和搜索你的文件。' },
   { key: 'shell', icon: 'terminal', title: '终端', description: '以你的身份运行命令，权限等同你的账户。' },
   { key: 'desktop', icon: 'monitor', title: '屏幕控制', description: '使用你的鼠标键盘。鼠标移到角落即停止。' },
-  { key: 'chrome', icon: 'browser', title: 'Chrome', description: '接入官方 Chrome DevTools MCP' },
+  { key: 'chrome', icon: 'browser', title: 'Chrome', description: '直接操作你正在用的 Chrome' },
 ]
 
 function ActivityPreview() {

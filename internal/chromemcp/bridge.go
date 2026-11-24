@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,29 +16,37 @@ type Status struct {
 	Message string `json:"message"`
 	Tools   int    `json:"tools"`
 }
+
+// Bridge publishes the built-in Chrome tools and drives the user's running
+// Chrome through its remote debugging port. It needs no helper program.
+//
+// The tools are listed as soon as the browser capability is on. Chrome is not
+// contacted beyond a harmless probe until a tool is called: the first call
+// opens the debugging connection, which Chrome asks the user to allow, and the
+// connection is then kept so that Chrome asks only once.
 type Bridge struct {
-	registry   *harness.Registry
-	opts       Options
-	mu         sync.Mutex
-	status     Status
-	client     *client
-	key        string
-	cancel     context.CancelFunc
-	done       chan struct{}
-	wake       chan struct{}
-	startOnce  sync.Once
-	retryAfter time.Time
-	roots      func() []string
+	registry  *harness.Registry
+	opts      Options
+	mu        sync.Mutex
+	status    Status
+	endpoint  string
+	browser   *chrome
+	published int
+	cancel    context.CancelFunc
+	done      chan struct{}
+	wake      chan struct{}
+	startOnce sync.Once
+	roots     func() []string
+	connMu    sync.Mutex // serializes opening the connection
 	// linked run after Refresh, so another browser provider follows the same triggers.
 	linked []func()
-	// Dependencies remain injectable for deterministic tests without controlling a browser.
-	detect  func(context.Context, Options) (target, error)
-	launch  func(context.Context, string, []string, []string) (*client, error)
-	resolve func(Options, target) (string, []string, []string, error)
+	// Injectable so tests need no Chrome.
+	detect func(context.Context, Options) (target, error)
+	dial   func(context.Context, string, func(session, method string, params json.RawMessage)) (*cdpConn, error)
 }
 
 func New(r *harness.Registry) *Bridge {
-	return &Bridge{registry: r, status: Status{State: "waiting", Message: "等待检测 Chrome 远程调试"}, wake: make(chan struct{}, 1), detect: discover, launch: startClient, resolve: command}
+	return &Bridge{registry: r, status: Status{State: "waiting", Message: "等待检测 Chrome 远程调试"}, wake: make(chan struct{}, 1), detect: discover, dial: dialCDP}
 }
 func (b *Bridge) Start(opts Options) error {
 	if opts.BrowserURL != "" {
@@ -64,22 +71,23 @@ func (b *Bridge) Start(opts Options) error {
 }
 
 // SetRoots sets the folders the browser tools may read and write, normally the
-// approved projects. Call it before Start; RootsChanged reports later changes.
+// approved projects. It is asked on every call, so changes apply at once.
 func (b *Bridge) SetRoots(fn func() []string) {
 	b.mu.Lock()
 	b.roots = fn
 	b.mu.Unlock()
 }
 
-// RootsChanged makes the connected Chrome DevTools server fetch the folders again.
-func (b *Bridge) RootsChanged() {
+func (b *Bridge) currentRoots() []string {
 	b.mu.Lock()
-	c := b.client
+	fn := b.roots
 	b.mu.Unlock()
-	if c != nil {
-		c.notifyRootsChanged()
+	if fn == nil {
+		return nil
 	}
+	return fn()
 }
+
 func (b *Bridge) Status() Status { b.mu.Lock(); defer b.mu.Unlock(); return b.status }
 
 // Link makes fn run whenever Refresh is called.
@@ -118,21 +126,25 @@ func (b *Bridge) setStatus(s Status) {
 		b.registry.Signal()
 	}
 }
-func (b *Bridge) disconnect() {
+
+// disconnect closes the debugging connection, or only the given one. Chrome
+// and its pages stay as they are.
+func (b *Bridge) disconnect(only *chrome) {
 	b.mu.Lock()
-	c := b.client
-	b.client = nil
-	b.key = ""
-	b.mu.Unlock()
-	if c != nil {
-		b.registry.ReplaceTools("browser", "chrome_", nil)
-		c.Close()
-		<-c.exited
+	br := b.browser
+	if br == nil || only != nil && br != only {
+		b.mu.Unlock()
+		return
 	}
+	b.browser = nil
+	b.mu.Unlock()
+	br.conn.Close()
 }
+
 func (b *Bridge) run(ctx context.Context) {
 	defer close(b.done)
-	defer b.disconnect()
+	defer b.unpublish()
+	defer b.disconnect(nil)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -142,91 +154,161 @@ func (b *Bridge) run(ctx context.Context) {
 			return
 		case <-ticker.C:
 		case <-b.wake:
-			b.retryAfter = time.Time{}
 		}
 	}
 }
+
+func (b *Bridge) publish() int {
+	b.mu.Lock()
+	count := b.published
+	b.mu.Unlock()
+	if count > 0 {
+		return count
+	}
+	catalog := chromeCatalog()
+	tools := make([]harness.Tool, 0, len(catalog))
+	for _, t := range catalog {
+		group := ""
+		if t.advanced {
+			group = "advanced"
+		}
+		tools = append(tools, harness.Tool{Spec: harness.Spec{Name: "chrome_" + t.name, Description: t.description, Category: "browser", InputSchema: t.schema, Annotations: map[string]any{"readOnlyHint": t.readOnly}, Mutating: !t.readOnly, Parallel: false, Group: group}, External: true, Run: b.handler(t)})
+	}
+	b.registry.ReplaceTools("browser", "chrome_", tools)
+	b.mu.Lock()
+	b.published = len(tools)
+	b.mu.Unlock()
+	return len(tools)
+}
+
+func (b *Bridge) unpublish() {
+	b.mu.Lock()
+	was := b.published
+	b.published = 0
+	b.mu.Unlock()
+	if was > 0 { // announce the change once, not on every tick
+		b.registry.ReplaceTools("browser", "chrome_", nil)
+	}
+}
+
 func (b *Bridge) reconcile(ctx context.Context) {
 	paused, enabled := b.registry.State()
 	if !enabled["browser"] {
-		b.disconnect()
-		b.setStatus(Status{State: "disabled", Message: "Chrome DevTools MCP 已关闭"})
+		b.disconnect(nil)
+		b.unpublish()
+		b.setStatus(Status{State: "disabled", Message: "Chrome 浏览器工具已关闭"})
 		return
 	}
 	if paused {
+		// A paused computer holds no control over the browser.
+		b.disconnect(nil)
 		return
 	}
-	if time.Now().Before(b.retryAfter) {
-		return
-	}
+	count := b.publish()
 	t, err := b.detect(ctx, b.opts)
-	connection := Status{State: "ready", Message: "工具已接入；首次使用时请允许 Chrome 的连接请求。"}
+	b.mu.Lock()
+	br := b.browser
+	connected := br != nil && br.conn.alive()
+	if err == nil {
+		b.endpoint = t.Endpoint
+	}
+	moved := err == nil && connected && br.endpoint != t.Endpoint
+	b.mu.Unlock()
+	switch {
+	case moved:
+		// Chrome restarted on another address: the old connection is of no use.
+		b.disconnect(br)
+	case err != nil && connected:
+		// One missed probe must not drop a working connection, which would make
+		// Chrome ask the user for permission again.
+		err = nil
+	}
+	status := Status{State: "ready", Message: "工具已接入；首次使用时请允许 Chrome 的连接请求。", Tools: count}
 	if err != nil {
-		connection = Status{State: "waiting", Message: err.Error()}
+		status = Status{State: "waiting", Message: err.Error(), Tools: count}
 		if errors.Is(err, ErrDebugPermission) {
-			connection.State = "permission_required"
+			status.State = "permission_required"
 		}
-		// Tool metadata is available before Chrome connects. Use attachment mode
-		// while waiting, so listing tools can never launch another browser.
-		t = target{Key: "catalog|" + b.opts.UserDataDir + "|" + b.opts.BrowserURL, Args: []string{"--autoConnect", "--channel=stable"}}
-		if b.opts.UserDataDir != "" {
-			t.Args = append(t.Args, "--user-data-dir="+b.opts.UserDataDir)
-		}
+	}
+	b.setStatus(status)
+}
+
+// connect returns the live debugging connection, opening it on the first call.
+func (b *Bridge) connect(ctx context.Context) (*chrome, error) {
+	b.connMu.Lock()
+	defer b.connMu.Unlock()
+	b.mu.Lock()
+	br, endpoint := b.browser, b.endpoint
+	b.mu.Unlock()
+	if br != nil && br.conn.alive() {
+		return br, nil
+	}
+	b.disconnect(br)
+	if endpoint == "" {
+		return nil, errors.New("Chrome's remote debugging was not found")
+	}
+	// Chrome answers only after the user allows the connection in its dialog.
+	dialCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	br = newChrome(nil, b.currentRoots)
+	br.endpoint = endpoint
+	conn, err := b.dial(dialCtx, endpoint, br.event)
+	if err != nil {
+		return nil, errors.New("Chrome did not accept the connection. Chrome shows a dialog asking to allow remote debugging: allow it, then call the tool again")
+	}
+	br.conn = conn
+	if _, err = conn.call(dialCtx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	// Do not keep a connection opened while the user paused or disabled the browser.
+	if paused, enabled := b.registry.State(); paused || !enabled["browser"] {
+		conn.Close()
+		return nil, errors.New("browser control was turned off")
 	}
 	b.mu.Lock()
-	c, key, count := b.client, b.key, b.status.Tools
+	b.browser = br
 	b.mu.Unlock()
-	if c != nil && key == t.Key {
-		select {
-		case <-c.done:
-		default:
-			connection.Tools = count
-			b.setStatus(connection)
-			return
-		}
-	}
-	b.disconnect()
-	path, args, env, err := b.resolve(b.opts, t)
-	if err != nil {
-		b.setStatus(Status{State: "unavailable", Message: err.Error()})
-		return
-	}
-	b.setStatus(Status{State: "connecting", Message: "正在启动官方 Chrome DevTools MCP，首次准备可能需要下载组件…"})
-	c, err = b.launch(ctx, path, args, env)
-	if err == nil {
-		initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	return br, nil
+}
+
+func (b *Bridge) handler(t chromeTool) harness.Handler {
+	return func(ctx context.Context, in harness.Invocation) (harness.Output, error) {
 		b.mu.Lock()
-		roots := b.roots
+		state, message := b.status.State, b.status.Message
 		b.mu.Unlock()
-		c.setRoots(roots)
-		err = c.initialize(initCtx)
-		var tools []harness.Tool
-		if err == nil {
-			tools, err = b.loadTools(initCtx, c)
+		if state != "ready" {
+			return harness.Output{}, &harness.ToolError{Code: "browser_not_ready", Message: "Chrome is not ready: " + message}
 		}
-		cancel()
-		if err == nil {
-			// Do not publish a connection enabled before a user paused or disabled it.
-			paused, enabled = b.registry.State()
-			if ctx.Err() != nil || paused || !enabled["browser"] {
-				c.Close()
-				<-c.exited
-				return
+		callCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		br, err := b.connect(callCtx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return harness.Output{}, ctx.Err()
 			}
-			b.mu.Lock()
-			b.client = c
-			b.key = t.Key
-			b.mu.Unlock()
-			b.registry.ReplaceTools("browser", "chrome_", tools)
-			connection.Tools = len(tools)
-			b.setStatus(connection)
-			return
+			return harness.Output{}, &harness.ToolError{Code: "browser_not_ready", Message: "Chrome is not ready: " + err.Error()}
 		}
-		c.Close()
-		<-c.exited
+		result, err := t.run(callCtx, br, in.Arguments)
+		if err == nil {
+			return harness.Output{Value: result, MCPResult: result}, nil
+		}
+		var toolErr *harness.ToolError
+		switch {
+		case ctx.Err() != nil:
+			// A cancelled call leaves the connection open; nothing is repeated.
+			return harness.Output{}, ctx.Err()
+		case !br.conn.alive():
+			b.disconnect(br)
+			b.Refresh()
+			return harness.Output{}, &harness.ToolError{Code: "browser_not_ready", Message: "Chrome closed the debugging connection, so the result of this call is unknown. Check the page before repeating it; the next call reconnects"}
+		case errors.Is(err, context.DeadlineExceeded):
+			return harness.Output{}, &harness.ToolError{Code: "browser_tool_failed", Message: "Chrome did not answer within two minutes. A dialog on the page or a busy page can cause this; chrome_list_pages still works"}
+		case errors.As(err, &toolErr):
+			return harness.Output{}, err
+		}
+		return harness.Output{}, &harness.ToolError{Code: "browser_tool_failed", Message: "Chrome: " + firstLine(err.Error(), "the tool failed")}
 	}
-	b.setStatus(Status{State: "error", Message: fmt.Sprintf("Chrome MCP 连接失败：%v", err)})
-	b.retryAfter = time.Now().Add(30 * time.Second)
 }
 
 // firstLine keeps an upstream error readable in the activity log: the first
@@ -243,117 +325,4 @@ func firstLine(text, fallback string) string {
 	return fallback
 }
 
-// pathHint explains the one refusal that is about ReadyRig's setup, not the page.
-func pathHint(result map[string]any) string {
-	content, _ := result["content"].([]any)
-	for _, item := range content {
-		if m, _ := item.(map[string]any); m != nil {
-			if text, _ := m["text"].(string); strings.Contains(text, "configured workspace roots") {
-				return ". File paths must be inside an approved project (see list_projects) or the OS temp folder"
-			}
-		}
-	}
-	return ""
-}
-
 var toolName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,57}$`)
-
-// advancedTools are the DevTools inspection tools that most browsing tasks never
-// need. They stay callable (directly or through use_tool) but are left out of
-// tools/list so the everyday browser tools are not buried in schemas.
-var advancedTools = map[string]bool{
-	"get_console_message": true, "list_console_messages": true,
-	"get_network_request": true, "list_network_requests": true,
-	"get_css_styles": true, "emulate": true, "resize_page": true,
-	"lighthouse_audit": true, "take_heapsnapshot": true,
-	"performance_analyze_insight": true, "performance_start_trace": true, "performance_stop_trace": true,
-}
-
-func groupOf(name string) string {
-	if advancedTools[name] {
-		return "advanced"
-	}
-	return ""
-}
-
-func (b *Bridge) loadTools(ctx context.Context, c *client) ([]harness.Tool, error) {
-	var out []harness.Tool
-	seen := map[string]bool{}
-	cursor := ""
-	cursors := map[string]bool{}
-	for {
-		params := map[string]any{}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		raw, err := c.call(ctx, "tools/list", params)
-		if err != nil {
-			return nil, err
-		}
-		var page struct {
-			Tools []struct {
-				Name         string         `json:"name"`
-				Description  string         `json:"description"`
-				InputSchema  map[string]any `json:"inputSchema"`
-				OutputSchema map[string]any `json:"outputSchema"`
-				Annotations  map[string]any `json:"annotations"`
-			} `json:"tools"`
-			NextCursor string `json:"nextCursor"`
-		}
-		if json.Unmarshal(raw, &page) != nil {
-			return nil, errors.New("Chrome MCP 工具清单无效")
-		}
-		for _, t := range page.Tools {
-			if !toolName.MatchString(t.Name) || seen[t.Name] || t.InputSchema["type"] != "object" {
-				return nil, errors.New("Chrome MCP 工具定义无效或重复")
-			}
-			seen[t.Name] = true
-			name := t.Name
-			readOnly, _ := t.Annotations["readOnlyHint"].(bool)
-			out = append(out, harness.Tool{Spec: harness.Spec{Name: "chrome_" + name, Description: t.Description, Category: "browser", InputSchema: t.InputSchema, OutputSchema: t.OutputSchema, Annotations: t.Annotations, Mutating: !readOnly, Parallel: false, Group: groupOf(name)}, External: true, Run: func(ctx context.Context, in harness.Invocation) (harness.Output, error) {
-				b.mu.Lock()
-				available := b.client == c && b.status.State == "ready"
-				message := b.status.Message
-				b.mu.Unlock()
-				if !available {
-					return harness.Output{}, &harness.ToolError{Code: "browser_not_ready", Message: "Chrome is not ready: " + message}
-				}
-				// A stale tool reference must never reconnect and silently repeat an action.
-				callCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-				defer cancel()
-				raw, err := c.call(callCtx, "tools/call", map[string]any{"name": name, "arguments": in.Arguments})
-				if err != nil {
-					b.Refresh()
-					return harness.Output{}, err
-				}
-				var result map[string]any
-				if json.Unmarshal(raw, &result) != nil || result == nil {
-					return harness.Output{}, errors.New("Chrome DevTools MCP returned an invalid result")
-				}
-				out := harness.Output{Value: result, MCPResult: result}
-				if failed, _ := result["isError"].(bool); failed {
-					return out, &harness.ToolError{Code: "browser_tool_failed", Message: "Chrome DevTools: " + firstLine(resultText(result), "the tool reported an error") + pathHint(result)}
-				}
-				return out, nil
-			}})
-		}
-		if len(out) > 256 {
-			return nil, errors.New("Chrome MCP 工具数超出上限")
-		}
-		cursor = page.NextCursor
-		if cursor == "" {
-			break
-		}
-		if cursors[cursor] {
-			return nil, errors.New("Chrome MCP 工具分页重复")
-		}
-		cursors[cursor] = true
-		if len(cursors) > 32 {
-			return nil, errors.New("Chrome MCP 工具分页超出上限")
-		}
-	}
-	if len(out) == 0 {
-		return nil, errors.New("Chrome MCP 未提供工具")
-	}
-	return out, nil
-}

@@ -30,7 +30,7 @@ func TestModernChromeWithoutHTTPDiscovery(t *testing.T) {
 	for _, browserURL := range []string{"", server.URL} {
 		got, err := discoverWithReader(context.Background(), Options{UserDataDir: dir, BrowserURL: browserURL}, []string{binary}, nil, reader)
 		expected := "ws://" + u.Host + "/devtools/browser/permission-session"
-		if err != nil || got.Key != expected || len(got.Args) != 1 || got.Args[0] != "--ws-endpoint="+expected {
+		if err != nil || got.Endpoint != expected {
 			t.Fatalf("got %+v, %v", got, err)
 		}
 	}
@@ -76,7 +76,7 @@ func TestApprovalServerConnectsWithoutReadingProfile(t *testing.T) {
 	}
 	got, err := discoverWithReader(context.Background(), Options{BrowserURL: server.URL}, []string{binary}, []string{dir}, reader)
 	expected := "ws" + strings.TrimPrefix(server.URL, "http") + "/devtools/browser"
-	if err != nil || got.Key != expected || len(got.Args) != 1 || got.Args[0] != "--ws-endpoint="+expected {
+	if err != nil || got.Endpoint != expected {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 	if len(requests) != 2 || requests[0] != "/json/version" || requests[1] != "/devtools/readyrig-probe" {
@@ -134,16 +134,5 @@ func TestDebugPermissionIsActionable(t *testing.T) {
 	_, err := discoverWithReader(context.Background(), Options{UserDataDir: dir}, []string{binary}, nil, reader)
 	if errors.Is(err, ErrDebugPermission) || err == nil || !strings.Contains(err.Error(), "开启远程调试") {
 		t.Fatalf("missing file confused with permission: %v", err)
-	}
-}
-
-func TestBridgeReportsPermissionInsteadOfMissingChrome(t *testing.T) {
-	b, r, _ := testBridge(t)
-	b.Close()
-	t.Cleanup(b.disconnect)
-	b.detect = func(context.Context, Options) (target, error) { return target{}, ErrDebugPermission }
-	b.reconcile(context.Background())
-	if b.Status().State != "permission_required" || len(r.Specs()) != 3 {
-		t.Fatalf("bad permission status: %+v", b.Status())
 	}
 }

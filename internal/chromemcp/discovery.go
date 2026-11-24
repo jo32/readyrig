@@ -1,4 +1,5 @@
-// Package chromemcp bridges the official Chrome DevTools MCP over stdio.
+// Package chromemcp provides the browser tools: built-in Chrome tools that speak
+// the DevTools protocol to the user's running Chrome, and Safari's own MCP server.
 package chromemcp
 
 import (
@@ -21,18 +22,15 @@ import (
 	"time"
 )
 
-const Package = "chrome-devtools-mcp@1.10.1"
-
 type Options struct {
 	Disabled    bool
 	BrowserURL  string
 	UserDataDir string
-	// Command is an optional installed chrome-devtools-mcp executable (never a shell string).
-	Command string
 }
+
+// target is the WebSocket address of a Chrome that accepts debugging connections.
 type target struct {
-	Key  string
-	Args []string
+	Endpoint string
 }
 
 func localURL(raw string) (string, error) {
@@ -171,10 +169,7 @@ func discoverWithReader(ctx context.Context, opts Options, bins, profiles []stri
 			continue
 		}
 		conn.Close()
-		// Pass the validated endpoint so Node does not need a second grant to
-		// read Chrome's protected data directory. Chrome still asks to allow CDP.
-		endpoint := "ws://" + addr + lines[1]
-		return target{Key: endpoint, Args: []string{"--ws-endpoint=" + endpoint}}, nil
+		return target{Endpoint: "ws://" + addr + lines[1]}, nil
 	}
 	if errors.Is(readErr, os.ErrPermission) {
 		return target{}, ErrDebugPermission
@@ -221,8 +216,7 @@ func probeURL(ctx context.Context, raw string) (target, error) {
 	if _, err = localURL("http://" + ws.Host); err != nil {
 		return target{}, err
 	}
-	// Use the validated endpoint, avoiding another discovery/redirect in the child.
-	return target{Key: version.WebSocketDebuggerURL, Args: []string{"--ws-endpoint=" + version.WebSocketDebuggerURL}}, nil
+	return target{Endpoint: version.WebSocketDebuggerURL}, nil
 }
 
 func probeApprovalServer(ctx context.Context, client *http.Client, base string) (target, error) {
@@ -251,5 +245,5 @@ func probeApprovalServer(ctx context.Context, client *http.Client, base string) 
 		return target{}, fmt.Errorf("此端口没有提供 Chrome 调试服务")
 	}
 	endpoint := "ws" + strings.TrimPrefix(base, "http") + "/devtools/browser"
-	return target{Key: endpoint, Args: []string{"--ws-endpoint=" + endpoint}}, nil
+	return target{Endpoint: endpoint}, nil
 }

@@ -94,7 +94,7 @@ func setupGuide(f *flag.FlagSet, o *startupOptions, in io.Reader, out io.Writer)
 		return false, err
 	}
 	_ = f.Set("allow-shell", fmt.Sprint(shell))
-	fmt.Fprintln(out, "\nBrowser tools require Chrome remote debugging and Node.js.")
+	fmt.Fprintln(out, "\nBrowser tools require remote debugging turned on in Chrome (chrome://inspect/#remote-debugging).")
 	browser, err := yesNo("3/3  Enable Chrome browser tools?", !o.NoChrome)
 	if err != nil {
 		return false, err

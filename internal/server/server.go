@@ -177,7 +177,7 @@ func (s *Server) UI() http.Handler {
 			problem(w, 500, err)
 			return
 		}
-		chrome := chromemcp.Status{State: "disabled", Message: "Chrome MCP 未启动"}
+		chrome := chromemcp.Status{State: "disabled", Message: "Chrome 浏览器工具未启动"}
 		if s.Chrome != nil {
 			chrome = s.Chrome.Status()
 		}

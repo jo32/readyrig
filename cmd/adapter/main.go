@@ -213,7 +213,7 @@ func run() (runErr error) {
 			return err
 		}
 	}
-	if err = a.Chrome.Start(chromemcp.Options{Disabled: opts.NoChrome, BrowserURL: opts.ChromeURL, UserDataDir: opts.ChromeProfile, Command: opts.ChromeCommand}); err != nil {
+	if err = a.Chrome.Start(chromemcp.Options{Disabled: opts.NoChrome, BrowserURL: opts.ChromeURL, UserDataDir: opts.ChromeProfile}); err != nil {
 		return err
 	}
 	a.Safari.Start(chromemcp.SafariOptions{Disabled: opts.NoSafari})

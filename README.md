@@ -1,6 +1,6 @@
 # ReadyRig — Local Agent Adapter
 
-ReadyRig is a local tool service written in Go with a Wails desktop console. It lets remote agents use REST or MCP to work with local files, run commands, and capture and control the macOS desktop, while keeping execution logs available on your computer. It also bridges the official Chrome DevTools MCP tools into the same interface.
+ReadyRig is a local tool service written in Go with a Wails desktop console. It lets remote agents use REST or MCP to work with local files, run commands, and capture and control the macOS desktop, while keeping execution logs available on your computer. Tools for your running Chrome are built in, and Safari's own tools appear in the same interface.
 
 [Website](https://readyrig.getmegaportal.com/) · [Cloud console](https://readyrig.getmegaportal.com/console) · [Releases](https://github.com/jo32/readyrig/releases) · [Changelog](CHANGELOG.md)
 
@@ -10,7 +10,7 @@ The website, desktop app, local browser console, and cloud device console suppor
 
 ## Getting started
 
-Building from source requires Go 1.25+. The macOS desktop build also requires Xcode Command Line Tools. The core application needs no Node.js, npm, or frontend bundler; the optional Chrome MCP integration requires Node.js.
+Building from source requires Go 1.25+. The macOS desktop build also requires Xcode Command Line Tools. The application needs no Node.js, npm, or frontend bundler, and neither do its Chrome tools.
 
 ```sh
 make app
@@ -43,7 +43,7 @@ The initial data directory must be outside the initial workspace. Adding a proje
 
 ## CLI and VMs
 
-ReadyRig has a desktop app and a CLI using the same backend, tools, permission checks, and local execution records. The CLI runs on macOS and Linux with amd64 or arm64 processors; it can configure and use an instance running on that machine. It also controls the desktop app when both builds include the CLI interface and use the same data directory. Linux supports file, terminal, and Chrome MCP tools; native desktop control remains macOS-only.
+ReadyRig has a desktop app and a CLI using the same backend, tools, permission checks, and local execution records. The CLI runs on macOS and Linux with amd64 or arm64 processors; it can configure and use an instance running on that machine. It also controls the desktop app when both builds include the CLI interface and use the same data directory. Linux supports file, terminal, and Chrome tools; native desktop control remains macOS-only.
 
 The macOS App includes a CLI of the same version. On first launch after moving it to Applications, the App registers `~/.local/bin/readyrig` and adds that directory to your shell's startup settings (zsh, bash, or fish), without administrator access. Open a new terminal and run `readyrig` for the TUI or use any subcommand. It attaches to the running App's service and shares its project catalog and logs. App updates also update its bundled CLI; moving the App repairs its command link on the next launch. Separately installed CLI binaries are preserved. The App's Connection page shows CLI installation status and any problem that needs fixing. Update the bundled CLI through the App so its code signature stays valid.
 
@@ -185,32 +185,48 @@ The official deployment has Google sign-in configured and verified. See the [clo
 
 From the [device console](https://readyrig.getmegaportal.com/console), choose **Copy cloud prompt** to get a prompt with a Bearer credential tied to your current login session. It lets an agent list your computers, retrieve public links and submit computer controls such as enabling shell, changing capability switches, starting/stopping sharing and pausing/resuming control. Actual tools run directly through the computer's public link without a token. Signing out or session expiry stops future cloud queries and control submissions. See the [cloud computer API](cloud/README.md#cloud-computer-api) for endpoints and deployment requirements.
 
-## Chrome DevTools MCP
+## Chrome tools
 
-ReadyRig starts and bridges the **official Chrome DevTools MCP** subprocess, adding its tools to REST, MCP, OpenAPI, and the Tools page. The application and bridge are written in Go; the official MCP subprocess requires Node.js.
+ReadyRig drives your running Chrome through its remote debugging port with tools built into the app, written in Go. Nothing else has to be installed: no Node.js and no `chrome-devtools-mcp`.
 
-1. In Chrome 144+, open `chrome://inspect/#remote-debugging`, enable remote debugging, and keep Chrome running.
-2. Install Node.js 20.19+, 22.12+, or a later supported version with npx. ReadyRig prefers `chrome-devtools-mcp` on PATH, otherwise it runs `npx --yes chrome-devtools-mcp@1.10.1`. Initial setup downloads and caches the component. Apps launched from Finder also search common Homebrew, Volta, mise, and nvm locations, skipping incompatible Node versions already on PATH. The component and its subprocesses use the selected Node installation; if no supported version is found, diagnostics report the incompatible version and path.
-3. Check Chrome status in Connection or Tools. Allow Chrome's connection request when the first tool call prompts you.
-4. Refresh `tools/list` through the current ReadyRig MCP URL to use tools such as `chrome_list_pages`, `chrome_take_snapshot`, and `chrome_click`. Follow the upstream schemas, including `pageId` where required. Clients that cache tools must refresh or reconnect; the gateway does not push tool-list changes.
+1. In Chrome 144+, open `chrome://inspect/#remote-debugging`, turn on remote debugging, and keep Chrome running.
+2. Check Chrome's status in Connection or Tools.
+3. Call a tool such as `chrome_list_pages`. The first call opens the debugging connection, and Chrome asks you to allow it. ReadyRig keeps that connection, so Chrome asks once: until Chrome or ReadyRig restarts, control is paused, or the Chrome switch is turned off.
 
-ReadyRig checks stable Chrome's `DevToolsActivePort` and local `127.0.0.1:9222` every five seconds. It attaches to an existing Chrome instance without launching a browser or enabling debugging. Tool definitions load independently of the browser connection: while Chrome is unavailable or its debugging file requires authorization, tools remain listed as waiting for a connection, and calls return the corresponding explanation. ReadyRig switches to the detected debugging endpoint when it becomes available. A ready status can still require Chrome's approval on the first operation.
+The tools keep the names and arguments of the Chrome DevTools MCP server that earlier versions ran, so existing prompts keep working:
 
-Custom debugging port, profile directory, or MCP executable:
+| Tools | Purpose |
+| --- | --- |
+| `chrome_list_pages`, `chrome_select_page`, `chrome_new_page`, `chrome_close_page`, `chrome_navigate_page` | Tabs and navigation |
+| `chrome_take_snapshot`, `chrome_take_screenshot`, `chrome_wait_for` | Read the page: its accessibility tree as text with a `uid` per element, or a picture |
+| `chrome_click`, `chrome_hover`, `chrome_drag`, `chrome_fill`, `chrome_fill_form`, `chrome_type_text`, `chrome_press_key`, `chrome_upload_file`, `chrome_handle_dialog` | Act on elements by `uid` |
+| `chrome_evaluate_script` | Run a JavaScript function in the page |
+| `chrome_list_console_messages`, `chrome_get_console_message`, `chrome_list_network_requests`, `chrome_get_network_request`, `chrome_emulate`, `chrome_resize_page` | Inspection and emulation (`advanced` group) |
+
+What differs from the Node.js server:
+
+- `pageId` is optional. Without it a tool uses the selected page: the one `chrome_new_page` opened or `chrome_select_page` chose. Nothing is selected at first, so a tool never acts on a tab you did not point it at.
+- The `uid`s of the last five snapshots of a page work until the page navigates.
+- File paths must be absolute.
+- `chrome_emulate` changes only the properties you pass; `networkConditions: "No emulation"` turns throttling off.
+- Console messages and network requests are recorded from the first tool call on a page, not from the moment Chrome opened it.
+- A snapshot includes same-site iframes but not cross-site ones.
+- `lighthouse_audit`, the `performance_*` tools, `take_heapsnapshot` and `get_css_styles` are not included.
+
+ReadyRig checks stable Chrome's `DevToolsActivePort` and local `127.0.0.1:9222` every five seconds. It attaches to an existing Chrome instance without launching a browser or enabling debugging. The tools are listed whenever the Chrome switch is on: while Chrome is unavailable or its debugging file requires authorization, calls return the corresponding explanation. If Chrome closes the connection, the next call opens a new one.
+
+Custom debugging port or profile directory:
 
 ```sh
 bin/readyrig-web web --chrome-browser-url http://127.0.0.1:9223
 bin/readyrig-web web --chrome-user-data-dir /absolute/path/to/chrome-profile
-bin/readyrig-web web --chrome-mcp-command /absolute/path/to/chrome-devtools-mcp
 ```
 
-Only local HTTP debugging URLs are accepted, without redirects or remote WebSocket endpoints. Profile discovery reads the debugging endpoint file rather than browsing history or account data. Use `--no-chrome` to disable startup detection, or the Chrome browser switch to save that choice for future launches. The direct agent API cannot change this setting; a bound cloud account can.
+Only local HTTP debugging URLs are accepted, without redirects or remote WebSocket endpoints. Profile discovery reads the debugging endpoint file rather than browsing history or account data. Use `--no-chrome` to disable startup detection, or the Chrome browser switch to save that choice for future launches. The direct agent API cannot change this setting; a bound cloud account can. `--chrome-mcp-command` is still accepted and ignored.
 
-Browser calls log arguments, duration, results, and failures and can be filtered by the browser category. The bridge preserves upstream schemas, annotations, text, images, and `structuredContent`. Browser screenshots appear in call details and JSON logs, but are excluded from desktop replay and desktop snapshot counts. Calls execute serially with a two-minute limit. Pause or cancellation disconnects the MCP subprocess; it reconnects after control resumes without closing your Chrome or retrying previously issued actions. Completed browser actions cannot be undone.
+Browser calls log arguments, duration, results, and failures and can be filtered by the browser category. Browser screenshots appear in call details and JSON logs, but are excluded from desktop replay and desktop snapshot counts. Calls execute serially with a two-minute limit. Pausing control closes the debugging connection; a cancelled call leaves it open. ReadyRig never closes your Chrome and never repeats an action by itself. Completed browser actions cannot be undone.
 
-Chrome MCP can access the attached browser profile. Its upload and save tools, such as a screenshot's `filePath`, may only use paths inside your approved projects or the OS temp folder: ReadyRig declares the approved projects to the Chrome DevTools server, tells it again when they change, and a path anywhere else is refused with a message that says so. Full Access widens this to every folder. Upstream usage statistics and CrUX queries are disabled by default. ReadyRig manages its own MCP subprocess; it cannot share another client's existing stdio process.
-
-See the [upstream guide to connecting to a running Chrome instance](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/advanced-usage.md#connecting-to-a-running-chrome-instance).
+The Chrome tools can access the attached browser profile. Files they read or write, such as a screenshot's `filePath` or an upload, must be inside your approved projects or the OS temp folder; a path anywhere else is refused with a message that says so. Full Access widens this to every folder. ReadyRig sends nothing about your browsing anywhere except to the agent that called the tool.
 
 ### Debugging file authorization on macOS
 
@@ -336,7 +352,7 @@ REST, MCP, OpenAPI, and the console share one tool registry.
 | `computer_ui_tree` | Accessibility elements with refs that `computer_action` can click | Serial (computer) |
 | `computer_app` | List windows; open or focus an application | Serial (computer) |
 | `computer_clipboard` | Read or replace clipboard text | Serial (computer) |
-| `chrome_*` | Dynamically discovered official Chrome DevTools MCP tools | Serial (browser) |
+| `chrome_*` | Built-in tools for your running Chrome, see [Chrome tools](#chrome-tools) | Serial (browser) |
 | `safari_*` | Dynamically discovered tools of Safari's built-in MCP server (Safari 27+) | Serial (browser) |
 
 "Serial" means one call at a time within that capability: a slow browser call no longer delays a file write or a screenshot. Mutating tools also accept an optional one-line `description`, shown in the activity log and not passed to the tool. When it is omitted ReadyRig writes a short label itself, such as the first words of a command or `edit src/a.go`.
@@ -351,7 +367,7 @@ Use `{"name":"exec_command"}` to inspect one tool even when disabled, or `{"incl
 
 ### Tool listing and advanced tools
 
-`tools/list` advertises only tools whose capability is enabled, so a model is not shown tools that would fail. The REST catalogue and the local Tools page still list everything. The twelve Chrome DevTools inspection tools that most browsing tasks do not need (console and network inspection, CSS styles, emulation, resizing, Lighthouse, performance traces, heap snapshots) form the `advanced` group: they stay callable but are left out of `tools/list`. `help` shows them, and `use_tool` with `{"name":"chrome_list_network_requests","arguments":{...}}` runs one. Safari's tools work the same way: five everyday ones (`safari_create_tab`, `safari_navigate_to_url`, `safari_get_page_content`, `safari_page_interactions`, `safari_screenshot`) are listed, and the other twelve (`safari_list_tabs`, `safari_evaluate_javascript`, `safari_dialogs`, and so on) are in the `advanced` group. Set `READYRIG_EXPOSE_ALL_TOOLS=1` before starting ReadyRig to advertise them all.
+`tools/list` advertises only tools whose capability is enabled, so a model is not shown tools that would fail. The REST catalogue and the local Tools page still list everything. The six Chrome inspection tools that most browsing tasks do not need (console and network inspection, emulation, resizing) form the `advanced` group: they stay callable but are left out of `tools/list`. `help` shows them, and `use_tool` with `{"name":"chrome_list_network_requests","arguments":{...}}` runs one. Safari's tools work the same way: five everyday ones (`safari_create_tab`, `safari_navigate_to_url`, `safari_get_page_content`, `safari_page_interactions`, `safari_screenshot`) are listed, and the other twelve (`safari_list_tabs`, `safari_evaluate_javascript`, `safari_dialogs`, and so on) are in the `advanced` group. Set `READYRIG_EXPOSE_ALL_TOOLS=1` before starting ReadyRig to advertise them all.
 
 ### File tools
 

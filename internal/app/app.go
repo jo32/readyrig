@@ -151,10 +151,7 @@ func New(workspace, dataDir string) (*App, error) {
 	safari := chromemcp.NewSafari(registry)
 	safari.SetRoots(approvedRoots)
 	chrome.Link(safari.Refresh)
-	projects.OnChange = func() {
-		chrome.RootsChanged()
-		privacy.Rebuild()
-	}
+	projects.OnChange = privacy.Rebuild
 	sharing := tunnel.New(tunnel.Options{Dir: filepath.Join(dataDir, "cloudflared"), Changed: registry.Signal, RedactSecrets: registry.AddSecrets})
 	ready = true
 	return &App{unlock: unlock, Server: &server.Server{Registry: registry, Projects: projects, Privacy: privacy, CommandEnv: commandEnv, Store: s, Computer: c, Chrome: chrome, Safari: safari, Tunnel: sharing, Transfers: transfers, Workspace: workspace, AccessPath: accessPath, UIKey: uiKey}, Processes: processes, Files: files, Transfers: transfers, Chrome: chrome, Safari: safari}, nil

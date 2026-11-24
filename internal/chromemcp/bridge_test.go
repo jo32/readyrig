@@ -1,11 +1,11 @@
 package chromemcp
 
 import (
-	"bufio"
 	"computer-use-server/internal/harness"
 	"computer-use-server/internal/store"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,109 +13,121 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
-// A real child process exercises framing, initialization, paging, errors and cancellation.
-func TestMCPHelperProcess(t *testing.T) {
-	if os.Getenv("READYRIG_MCP_TEST_CHILD") != "1" {
-		return
-	}
-	initialized := false
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		var req struct {
-			ID     any                        `json:"id"`
-			Method string                     `json:"method"`
-			Params map[string]json.RawMessage `json:"params"`
-			Result json.RawMessage            `json:"result"`
-			Error  json.RawMessage            `json:"error"`
-		}
-		_ = json.Unmarshal(scanner.Bytes(), &req)
-		// READYRIG_MCP_TEST_OUT collects what the client declared and answered.
-		record := func(v map[string]any) {
-			if path := os.Getenv("READYRIG_MCP_TEST_OUT"); path != "" {
-				f, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-				_ = json.NewEncoder(f).Encode(v)
-				f.Close()
-			}
-		}
-		if req.Method == "" && req.ID != nil { // a reply to a request this child sent
-			record(map[string]any{"kind": "response", "id": req.ID, "result": req.Result, "error": req.Error})
-			continue
-		}
-		var result any
-		switch req.Method {
-		case "initialize":
-			record(map[string]any{"kind": "capabilities", "value": req.Params["capabilities"]})
-			result = map[string]any{"protocolVersion": "2025-06-18"}
-		case "notifications/initialized":
-			initialized = true
-			if os.Getenv("READYRIG_MCP_TEST_ROOTS") == "1" {
-				// Id 2 is the id of the tools/list call pending right now: a server
-				// request must never be taken for its reply.
-				fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","id":2,"method":"roots/list"}`)
-				fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","id":"s-3","method":"sampling/createMessage","params":{}}`)
-			}
-			continue
-		case "notifications/roots/list_changed":
-			record(map[string]any{"kind": "notification", "method": req.Method})
-			continue
-		case "tools/list":
-			if !initialized {
-				os.Exit(4)
-			}
-			tool := func(name string) map[string]any {
-				return map[string]any{"name": name, "description": "test tool", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"anyOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "number"}}}}}, "annotations": map[string]any{"readOnlyHint": true}, "outputSchema": map[string]any{"type": "object"}}
-			}
-			if req.Params["cursor"] == nil {
-				result = map[string]any{"tools": []any{tool("echo")}, "nextCursor": "page2"}
-			} else {
-				result = map[string]any{"tools": []any{tool("fail"), tool("block")}}
-			}
-		case "tools/call":
-			var name string
-			_ = json.Unmarshal(req.Params["name"], &name)
-			if name == "block" {
-				time.Sleep(time.Minute)
-			}
-			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Chrome reply"}, map[string]any{"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}}, "structuredContent": map[string]any{"echo": req.Params["arguments"]}, "isError": name == "fail"}
-		default:
-			continue
-		}
-		// Notifications must not be mistaken for responses.
-		fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"notifications/message","params":{}}`)
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
-	}
-	os.Exit(0)
+// fakeChrome is a debugging endpoint that answers the few browser-level
+// commands the bridge needs, and counts connections: each one stands for a
+// permission dialog in the real Chrome.
+type fakeChrome struct {
+	server *httptest.Server
+	dials  atomic.Int32
+	mu     sync.Mutex
+	conns  []*websocket.Conn
 }
-func testBridge(t *testing.T) (*Bridge, *harness.Registry, *store.Store) {
+
+func newFakeChrome(t *testing.T) *fakeChrome {
 	t.Helper()
-	return testBridgeWith(t, nil)
+	f := &fakeChrome{}
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		f.dials.Add(1)
+		f.mu.Lock()
+		f.conns = append(f.conns, conn)
+		f.mu.Unlock()
+		for {
+			_, data, err := conn.Read(context.Background())
+			if err != nil {
+				return
+			}
+			var msg struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			_ = json.Unmarshal(data, &msg)
+			var result any = map[string]any{}
+			if msg.Method == "Target.getTargets" {
+				result = map[string]any{"targetInfos": []any{
+					map[string]any{"targetId": "T1", "type": "page", "title": "Example", "url": "https://example.com/"},
+					map[string]any{"targetId": "T2", "type": "service_worker", "url": "https://example.com/sw.js"},
+					map[string]any{"targetId": "T3", "type": "page", "url": "devtools://devtools/bundled/inspector.html"},
+				}}
+			}
+			// An event between replies must not be taken for one.
+			_ = conn.Write(context.Background(), websocket.MessageText, []byte(`{"method":"Target.targetInfoChanged","params":{}}`))
+			reply, _ := json.Marshal(map[string]any{"id": msg.ID, "result": result})
+			_ = conn.Write(context.Background(), websocket.MessageText, reply)
+		}
+	}))
+	t.Cleanup(func() { f.drop(); f.server.Close() })
+	return f
 }
-func testBridgeWith(t *testing.T, setup func(*Bridge)) (*Bridge, *harness.Registry, *store.Store) {
+
+func (f *fakeChrome) endpoint() string {
+	return "ws" + strings.TrimPrefix(f.server.URL, "http") + "/devtools/browser"
+}
+
+// drop closes every connection, as Chrome does when it quits.
+func (f *fakeChrome) drop() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, conn := range f.conns {
+		_ = conn.CloseNow()
+	}
+	f.conns = nil
+}
+
+type bridgeRig struct {
+	b      *Bridge
+	r      *harness.Registry
+	s      *store.Store
+	chrome *fakeChrome
+	mu     sync.Mutex
+	fail   error // what detection reports instead of the fake Chrome
+}
+
+func (g *bridgeRig) setFail(err error) {
+	g.mu.Lock()
+	g.fail = err
+	g.mu.Unlock()
+}
+
+func newBridgeRig(t *testing.T, fail error) *bridgeRig {
 	t.Helper()
 	s, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := harness.New(s)
-	b := New(r)
-	b.detect = func(context.Context, Options) (target, error) { return target{Key: "test"}, nil }
-	b.resolve = func(Options, target) (string, []string, []string, error) {
-		return os.Args[0], []string{"-test.run=^TestMCPHelperProcess$"}, append(os.Environ(), "READYRIG_MCP_TEST_CHILD=1"), nil
+	g := &bridgeRig{r: harness.New(s), s: s, chrome: newFakeChrome(t), fail: fail}
+	g.b = New(g.r)
+	g.b.detect = func(context.Context, Options) (target, error) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if g.fail != nil {
+			return target{}, g.fail
+		}
+		return target{Endpoint: g.chrome.endpoint()}, nil
 	}
-	if setup != nil {
-		setup(b)
-	}
-	if err := b.Start(Options{}); err != nil {
+	if err := g.b.Start(Options{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { r.SetPaused(true); b.Close(); r.WaitBackground(); s.Close() })
-	waitFor(t, func() bool { return b.Status().State == "ready" })
-	return b, r, s
+	t.Cleanup(func() { g.r.SetPaused(true); g.b.Close(); g.r.WaitBackground(); s.Close() })
+	waitFor(t, func() bool { return g.b.Status().Tools > 0 })
+	return g
 }
+
+func (g *bridgeRig) invoke(name, arguments string) (harness.Output, store.Call, error) {
+	return g.r.Invoke(context.Background(), name, harness.Invocation{Session: "agent", Client: "test", Arguments: json.RawMessage(arguments)})
+}
+
 func waitFor(t *testing.T, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -126,75 +138,175 @@ func waitFor(t *testing.T, fn func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
-func TestBridgeDiscoveryForwardingAuditAndDisable(t *testing.T) {
-	b, r, s := testBridge(t)
-	specs := r.Specs()
-	if len(specs) != 3 || specs[0].Name != "chrome_echo" || specs[0].Mutating || specs[0].OutputSchema == nil {
-		t.Fatalf("bad tools: %#v", specs)
+
+func TestBridgeListsToolsAndConnectsOnFirstCall(t *testing.T) {
+	g := newBridgeRig(t, nil)
+	waitFor(t, func() bool { return g.b.Status().State == "ready" })
+	catalog := chromeCatalog()
+	specs := map[string]harness.Spec{}
+	for _, spec := range g.r.Specs() {
+		specs[spec.Name] = spec
 	}
-	out, call, err := r.Invoke(context.Background(), "chrome_echo", harness.Invocation{Session: "agent", Client: "test", Arguments: json.RawMessage(`{"value":42}`)})
+	if len(specs) != len(catalog) || g.b.Status().Tools != len(catalog) {
+		t.Fatalf("published %d of %d tools, status %+v", len(specs), len(catalog), g.b.Status())
+	}
+	for _, tool := range catalog {
+		spec, ok := specs["chrome_"+tool.name]
+		if !ok || spec.Category != "browser" || spec.Mutating == tool.readOnly || spec.Parallel || (spec.Group == "advanced") != tool.advanced || spec.InputSchema["type"] != "object" || spec.Description == "" {
+			t.Fatalf("bad spec for %s: %+v", tool.name, spec)
+		}
+	}
+	// Listing tools and watching for Chrome never opens the connection Chrome asks the user about.
+	g.b.Refresh()
+	time.Sleep(50 * time.Millisecond)
+	if n := g.chrome.dials.Load(); n != 0 {
+		t.Fatalf("connected to Chrome %d times before a tool was called", n)
+	}
+	out, call, err := g.invoke("chrome_list_pages", `{}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.MCPResult["content"].([]any)) != 2 || out.MCPResult["structuredContent"] == nil {
-		t.Fatal("content lost", out)
+	text := resultText(out.MCPResult)
+	if !strings.Contains(text, "1: https://example.com/ (Example)") || strings.Contains(text, "sw.js") || strings.Contains(text, "devtools://") {
+		t.Fatalf("wrong page list:\n%s", text)
 	}
-	saved, err := s.Get(call.ID)
-	if err != nil || saved.Status != "success" || !strings.Contains(string(saved.Result), "Chrome reply") {
+	saved, err := g.s.Get(call.ID)
+	if err != nil || saved.Status != "success" || !strings.Contains(string(saved.Result), "example.com") {
 		t.Fatal(saved, err)
 	}
-	out, call, err = r.Invoke(context.Background(), "chrome_fail", harness.Invocation{Arguments: json.RawMessage(`{}`)})
-	if err == nil || call.Status != "error" || out.MCPResult["isError"] != true {
-		t.Fatal("upstream failure not preserved", out, call, err)
+	// The connection is kept: Chrome asks for permission once, not on every call.
+	for i := 0; i < 3; i++ {
+		if _, _, err = g.invoke("chrome_list_pages", `{}`); err != nil {
+			t.Fatal(err)
+		}
 	}
-	r.Enable("browser", false)
-	_, call, err = r.Invoke(context.Background(), "chrome_echo", harness.Invocation{Arguments: json.RawMessage(`{}`)})
+	if n := g.chrome.dials.Load(); n != 1 {
+		t.Fatalf("connected to Chrome %d times for 4 calls", n)
+	}
+	// A failing tool reports why, and the connection survives it.
+	_, call, err = g.invoke("chrome_take_snapshot", `{}`)
+	if err == nil || call.Status != "error" || harness.ErrorCode(err) != "browser_tool_failed" || !strings.Contains(err.Error(), "pageId") {
+		t.Fatal("an unselected page was not reported", err, call.Status)
+	}
+	if _, _, err = g.invoke("chrome_click", `{"uid": 5}`); err == nil || harness.ErrorCode(err) != "invalid_arguments" {
+		t.Fatal("wrongly typed arguments were accepted", err)
+	}
+
+	g.r.Enable("browser", false)
+	_, call, err = g.invoke("chrome_list_pages", `{}`)
 	if err == nil || call.Status != "denied" {
 		t.Fatal("disabled browser accepted a call")
 	}
-	b.Refresh()
-	waitFor(t, func() bool { return b.Status().State == "disabled" })
-	if len(r.Specs()) != 0 {
-		t.Fatal("disabled tools still published")
+	g.b.Refresh()
+	waitFor(t, func() bool { return g.b.Status().State == "disabled" })
+	g.b.mu.Lock()
+	connected := g.b.browser != nil
+	g.b.mu.Unlock()
+	if len(g.r.Specs()) != 0 || connected {
+		t.Fatal("a disabled browser is still published or connected")
 	}
-	r.Enable("browser", true)
-	b.Refresh()
-	waitFor(t, func() bool { return b.Status().State == "ready" })
+	g.r.Enable("browser", true)
+	g.b.Refresh()
+	waitFor(t, func() bool { return g.b.Status().State == "ready" && len(g.r.Specs()) == len(catalog) })
 }
-func TestBridgeCancellationStopsChildAndCanReconnect(t *testing.T) {
-	b, r, _ := testBridge(t)
-	b.mu.Lock()
-	old := b.client
-	b.mu.Unlock()
+
+func TestBridgeReconnectsAfterChromeClosesAndDropsControlWhenPaused(t *testing.T) {
+	g := newBridgeRig(t, nil)
+	waitFor(t, func() bool { return g.b.Status().State == "ready" })
+	if _, _, err := g.invoke("chrome_list_pages", `{}`); err != nil {
+		t.Fatal(err)
+	}
+	// One missed probe keeps the working connection and the ready status.
+	g.setFail(errors.New("probe timed out"))
+	g.b.reconcile(context.Background())
+	if g.b.Status().State != "ready" {
+		t.Fatal("a missed probe took a connected Chrome away", g.b.Status())
+	}
+	if _, _, err := g.invoke("chrome_list_pages", `{}`); err != nil || g.chrome.dials.Load() != 1 {
+		t.Fatal("a missed probe dropped the connection", err, g.chrome.dials.Load())
+	}
+	g.setFail(nil)
+	// Chrome quits and comes back: the next call connects again by itself.
+	g.chrome.drop()
+	waitFor(t, func() bool {
+		g.b.mu.Lock()
+		defer g.b.mu.Unlock()
+		return g.b.browser == nil || !g.b.browser.conn.alive()
+	})
+	if _, _, err := g.invoke("chrome_list_pages", `{}`); err != nil || g.chrome.dials.Load() != 2 {
+		t.Fatal("did not reconnect after Chrome closed the connection", err, g.chrome.dials.Load())
+	}
+	// A cancelled call does not cost the connection.
 	ctx, cancel := context.WithCancel(context.Background())
-	finished := make(chan error, 1)
-	go func() {
-		_, _, err := r.Invoke(ctx, "chrome_block", harness.Invocation{Arguments: json.RawMessage(`{}`)})
-		finished <- err
-	}()
-	time.Sleep(50 * time.Millisecond)
 	cancel()
-	select {
-	case err := <-finished:
-		if err == nil {
-			t.Fatal("cancel succeeded")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("cancel blocked")
+	if _, _, err := g.r.Invoke(ctx, "chrome_list_pages", harness.Invocation{Arguments: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("a cancelled call succeeded")
 	}
-	select {
-	case <-old.exited:
-	case <-time.After(2 * time.Second):
-		t.Fatal("child survived cancellation")
+	if _, _, err := g.invoke("chrome_list_pages", `{}`); err != nil || g.chrome.dials.Load() != 2 {
+		t.Fatal("a cancelled call dropped the connection", err, g.chrome.dials.Load())
 	}
-	b.Refresh()
-	waitFor(t, func() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.client != nil && b.client != old })
-	r.SetPaused(true)
-	_, call, err := r.Invoke(context.Background(), "chrome_echo", harness.Invocation{Arguments: json.RawMessage(`{}`)})
+	g.r.SetPaused(true)
+	_, call, err := g.invoke("chrome_list_pages", `{}`)
 	if err == nil || call.Status != "denied" {
 		t.Fatal("paused call accepted")
 	}
+	g.b.Refresh()
+	waitFor(t, func() bool { g.b.mu.Lock(); defer g.b.mu.Unlock(); return g.b.browser == nil })
 }
+
+func TestToolsStayListedWhileChromeIsNotReady(t *testing.T) {
+	g := newBridgeRig(t, ErrDebugPermission)
+	count := len(chromeCatalog())
+	waitFor(t, func() bool { return g.b.Status().State == "permission_required" })
+	if status := g.b.Status(); status.Tools != count || len(g.r.Specs()) != count {
+		t.Fatal("missing waiting catalog", status)
+	}
+	_, call, err := g.invoke("chrome_list_pages", `{}`)
+	if err == nil || call.Status != "error" || harness.ErrorCode(err) != "browser_not_ready" || !strings.Contains(err.Error(), "授权") {
+		t.Fatal("unready browser call was accepted", err, call.Status)
+	}
+	g.setFail(fmt.Errorf("等待 Chrome 开启远程调试"))
+	g.b.reconcile(context.Background())
+	if g.b.Status().State != "waiting" || len(g.r.Specs()) != count {
+		t.Fatal("catalog disappeared while Chrome was closed")
+	}
+	if g.chrome.dials.Load() != 0 {
+		t.Fatal("connected to a Chrome that was not detected")
+	}
+	g.setFail(nil)
+	g.b.reconcile(context.Background())
+	if g.b.Status().State != "ready" {
+		t.Fatal("did not notice Chrome", g.b.Status())
+	}
+	if _, _, err = g.invoke("chrome_list_pages", `{}`); err != nil {
+		t.Fatal("connected call failed", err)
+	}
+}
+
+// The schemas are written by hand: each must be an object schema whose required
+// names exist, with a description on every property.
+func TestCatalogSchemasAreConsistent(t *testing.T) {
+	seen := map[string]bool{}
+	for _, tool := range chromeCatalog() {
+		if seen[tool.name] || !toolName.MatchString("chrome_"+tool.name) || tool.run == nil {
+			t.Fatalf("bad tool %q", tool.name)
+		}
+		seen[tool.name] = true
+		properties, _ := tool.schema["properties"].(props)
+		for name, raw := range properties {
+			property, _ := raw.(map[string]any)
+			if property == nil || property["type"] == nil || property["description"] == "" || property["description"] == nil {
+				t.Fatalf("%s.%s has no type or description", tool.name, name)
+			}
+		}
+		for _, name := range tool.schema["required"].([]string) {
+			if properties[name] == nil {
+				t.Fatalf("%s requires %q, which it does not define", tool.name, name)
+			}
+		}
+	}
+}
+
 func TestLocalURLAndChromeProbe(t *testing.T) {
 	for _, raw := range []string{"https://127.0.0.1:9222", "http://example.com:9222", "http://127.0.0.1:9222/path", "http://user:pw@127.0.0.1:9222", "http://127.0.0.1:9222?x=1", "http://localhost"} {
 		if _, err := localURL(raw); err == nil {
@@ -217,7 +329,7 @@ func TestLocalURLAndChromeProbe(t *testing.T) {
 	defer server.Close()
 	endpoint = server.URL
 	target, err := probeURL(context.Background(), endpoint)
-	if err != nil || len(target.Args) != 1 || !strings.HasPrefix(target.Args[0], "--ws-endpoint=") {
+	if err != nil || !strings.HasPrefix(target.Endpoint, "ws://127.0.0.1:") || !strings.HasSuffix(target.Endpoint, "/devtools/browser/test") {
 		t.Fatal(target, err)
 	}
 	remote = true
@@ -252,7 +364,7 @@ func TestDiscoveryRequiresChromeAndLiveDebugging(t *testing.T) {
 		t.Fatal("browser not installed")
 	}
 	target, err := discoverAt(context.Background(), opts, []string{binary}, []string{dir})
-	if err != nil || len(target.Args) != 1 || !strings.HasPrefix(target.Args[0], "--ws-endpoint=ws://127.0.0.1:"+port+"/devtools/browser/") {
+	if err != nil || target.Endpoint != "ws://127.0.0.1:"+port+"/devtools/browser/test" {
 		t.Fatal(target, err)
 	}
 	listener.Close()
@@ -264,61 +376,5 @@ func TestDiscoveryRequiresChromeAndLiveDebugging(t *testing.T) {
 		if _, err := discoverAt(context.Background(), opts, []string{binary}, []string{dir}); err == nil {
 			t.Fatal("invalid marker accepted", bad)
 		}
-	}
-}
-
-func TestCatalogRemainsVisibleUntilChromeIsReady(t *testing.T) {
-	s, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := harness.New(s)
-	b := New(r)
-	t.Cleanup(func() { b.disconnect(); r.WaitBackground(); s.Close() })
-	var detectErr error = ErrDebugPermission
-	b.detect = func(context.Context, Options) (target, error) {
-		if detectErr != nil {
-			return target{}, detectErr
-		}
-		return target{Key: "live-chrome", Args: []string{"--ws-endpoint=ws://127.0.0.1:9222/devtools/browser/test"}}, nil
-	}
-	starts := 0
-	b.resolve = func(_ Options, target target) (string, []string, []string, error) {
-		starts++
-		if starts == 1 && (len(target.Args) < 1 || target.Args[0] != "--autoConnect") {
-			t.Fatal("catalog may launch a separate browser", target)
-		}
-		return os.Args[0], []string{"-test.run=^TestMCPHelperProcess$"}, append(os.Environ(), "READYRIG_MCP_TEST_CHILD=1"), nil
-	}
-	b.reconcile(context.Background())
-	if status := b.Status(); status.State != "permission_required" || status.Tools != 3 || len(r.Specs()) != 3 {
-		t.Fatal("missing waiting catalog", status)
-	}
-	_, call, err := r.Invoke(context.Background(), "chrome_echo", harness.Invocation{Arguments: json.RawMessage(`{}`)})
-	if err == nil || call.Status != "error" || !strings.Contains(err.Error(), "授权") {
-		t.Fatal("unready browser call was forwarded", err, call.Status)
-	}
-	// Repeated checks keep the catalog process; a pending browser isn't a broken MCP.
-	b.reconcile(context.Background())
-	if starts != 1 {
-		t.Fatal("restarted catalog on every check", starts)
-	}
-	detectErr = fmt.Errorf("等待 Chrome 开启远程调试")
-	b.reconcile(context.Background())
-	if b.Status().State != "waiting" || len(r.Specs()) != 3 || starts != 1 {
-		t.Fatal("catalog disappeared while Chrome was closed")
-	}
-	detectErr = nil
-	b.reconcile(context.Background())
-	if b.Status().State != "ready" || starts != 2 {
-		t.Fatal("did not switch to live endpoint", b.Status(), starts)
-	}
-	if _, _, err = r.Invoke(context.Background(), "chrome_echo", harness.Invocation{Arguments: json.RawMessage(`{}`)}); err != nil {
-		t.Fatal("connected call failed", err)
-	}
-	r.Enable("browser", false)
-	b.reconcile(context.Background())
-	if b.Status().State != "disabled" || len(r.Specs()) != 0 {
-		t.Fatal("disabled browser still published")
 	}
 }

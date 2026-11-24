@@ -23,7 +23,7 @@ const featuresData: { number: string; icon: IconName; title: string; body: strin
     number: '02',
     icon: 'browser',
     title: '从浏览器，到整个桌面。',
-    body: '接入官方 Chrome DevTools MCP；在 macOS 上截图、点击、输入，让网页与桌面操作连起来。',
+    body: '内置 Chrome 浏览器工具，无需另装组件；在 macOS 上截图、点击、输入，让网页与桌面操作连起来。',
     tags: ['Chrome DevTools', 'macOS 桌面'],
   },
   {
