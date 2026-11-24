@@ -233,7 +233,6 @@ export default {
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
     await env.DB.batch([
       env.DB.prepare('DELETE FROM mcp_registration_limits WHERE expires_at<?').bind(now()),
-      env.DB.prepare('DELETE FROM mcp_clients WHERE user_id IS NULL AND created_at<? AND NOT EXISTS(SELECT 1 FROM mcp_grants WHERE client_id=mcp_clients.id AND refresh_expires_at>?)').bind(now() - 86400, now()),
       env.DB.prepare('DELETE FROM mcp_requests WHERE expires_at<?').bind(now()),
       env.DB.prepare('DELETE FROM mcp_codes WHERE expires_at<?').bind(now()),
       env.DB.prepare('DELETE FROM mcp_grants WHERE refresh_expires_at<?').bind(now()),

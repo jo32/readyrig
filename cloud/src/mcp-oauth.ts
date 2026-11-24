@@ -11,6 +11,17 @@ export async function challenge(verifier: string): Promise<string> {
 }
 function oauthError(error: string, status = 400) { return json({ error }, status) }
 
+function unknownClient(req: Request): Response {
+  const message = 'ReadyRig does not recognize this app registration. Return to your app and reconnect ReadyRig to register it again.'
+  const headers = { 'Cache-Control': 'no-store', Vary: 'Accept', 'Referrer-Policy': 'no-referrer' }
+  if (req.headers.get('Accept')?.includes('text/html')) {
+    return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reconnect ReadyRig</title><main><h1>Reconnect ReadyRig</h1><p>${message}</p><p lang="zh-CN">ReadyRig 无法识别此应用注册信息。请返回原应用，重新连接 ReadyRig 以再次注册。</p></main></html>`, {
+      status: 400, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
+    })
+  }
+  return Response.json({ error: 'invalid_request', error_description: message }, { status: 400, headers })
+}
+
 export async function oauthRoute(req: Request, env: Env, getUser: () => Promise<User>, sessionHash: () => Promise<string>): Promise<Response | null> {
   const url = new URL(req.url), path = url.pathname
   if (req.method === 'GET' && ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'].includes(path)) {
@@ -27,7 +38,8 @@ export async function oauthRoute(req: Request, env: Env, getUser: () => Promise<
     const p = url.searchParams
     for (const key of new Set(p.keys())) if (p.getAll(key).length !== 1) return oauthError('invalid_request')
     const client = await env.DB.prepare('SELECT * FROM mcp_clients WHERE id=?').bind(p.get('client_id') || '').first<Client>()
-    if (!client || !JSON.parse(client.redirect_uris).includes(p.get('redirect_uri'))) return oauthError('invalid_request')
+    if (!client) return p.get('client_id') ? unknownClient(req) : oauthError('invalid_request')
+    if (!JSON.parse(client.redirect_uris).includes(p.get('redirect_uri'))) return oauthError('invalid_request')
     if (p.get('response_type') !== 'code') return oauthError('unsupported_response_type')
     if (p.get('resource') !== resource(env)) return oauthError('invalid_target')
     if (p.has('scope') && p.get('scope') !== scope) return oauthError('invalid_scope')

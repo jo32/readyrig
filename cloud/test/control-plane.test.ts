@@ -568,6 +568,31 @@ test('Spark automatic registration and query-resource token flow work without ma
   assert.equal((await form('/oauth/token', { client_id: clientID, grant_type: 'refresh_token', refresh_token: refresh.result.refresh_token, resource: origin + '/mcp' })).result.error, 'invalid_grant')
 })
 
+test('automatic clients can authorize after cleanup before first use and after grant expiry', async () => {
+  const { result } = await call('/oauth/register', 'POST', { redirect_uris: [callback], token_endpoint_auth_method: 'none' })
+  const client = { client_id: result.client_id }
+  db.prepare('UPDATE mcp_clients SET created_at=? WHERE id=?').run(timestamp() - 90 * 86400, client.client_id)
+  await worker.scheduled({} as ScheduledEvent, env)
+  const tokens = await mcpToken(client)
+  db.prepare('UPDATE mcp_grants SET access_expires_at=0, refresh_expires_at=0 WHERE client_id=?').run(client.client_id)
+  await worker.scheduled({} as ScheduledEvent, env)
+  assert.equal((await rpc(tokens.access_token, 'ping')).response.status, 401)
+  assert.equal((await rpc((await mcpToken(client)).access_token, 'ping')).response.status, 200)
+})
+
+test('unknown OAuth clients receive local recovery instructions in the requested format', async () => {
+  const query = new URLSearchParams({ client_id: randomToken(), redirect_uri: callback })
+  for (const accept of ['application/json', 'text/html']) {
+    const { response, result } = await call('/oauth/authorize?' + query, 'GET', undefined, { Accept: accept })
+    assert.equal(response.status, 400)
+    assert.equal(response.headers.get('Location'), null)
+    if (accept === 'application/json') assert.equal(result.error, 'invalid_request')
+    const message = result ? result.error_description : await response.text()
+    assert.match(message, /reconnect ReadyRig/i)
+    assert.ok(!message.includes(callback))
+  }
+})
+
 test('automatic clients isolate account grants; revocation does not disconnect other users', async () => {
   const registration = (await call('/oauth/register', 'POST', { client_name: 'Google', redirect_uris: [callback], token_endpoint_auth_method: 'none' })).result
   const client = { client_id: registration.client_id }

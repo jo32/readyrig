@@ -182,6 +182,9 @@ GET returns 405), protected resource metadata at
 `/.well-known/oauth-authorization-server`. Dynamic registration at `/oauth/register`
 accepts public clients and clients using `client_secret_post` or
 `client_secret_basic`. Registration is rate limited and grants no account access.
+Dynamic client IDs persist across grant expiry and revocation so an app can
+request consent again. If ReadyRig no longer recognizes a saved client ID,
+reconnect ReadyRig from the app to start a fresh registration.
 Authorization requires explicit signed-in consent, an exact registered redirect
 URL, authorization code + S256 PKCE, and the `computers:control` scope.
 Both authorize and token requests require `resource` equal to the MCP URL;
